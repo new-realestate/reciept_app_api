@@ -27,6 +27,8 @@ class Tenant(Base):
     bank_account_number: Mapped[str | None] = mapped_column(Text)
     plan_tier: Mapped[PlanTier] = mapped_column(plan_tier_enum, nullable=False, default=PlanTier.free_trial)
     default_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="UGX")
+    # Which receipt PDF/hosted-view layout to use; see app/services/pdf.py RECEIPT_TEMPLATES.
+    receipt_template: Mapped[str] = mapped_column(Text, nullable=False, default="classic", server_default="classic")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

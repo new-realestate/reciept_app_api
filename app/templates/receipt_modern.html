@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Receipt {{ receipt.reference_number }}</title>
+{% set accent = tenant.brand_color or "#3b3fd1" %}
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1f2430; }
+  .accent-bar { height: 14px; background: {{ accent }}; }
+  .page { padding: 1.4cm 2cm 1.5cm; }
+
+  table { border-collapse: collapse; width: 100%; }
+  td { vertical-align: top; padding: 0; }
+
+  .brand img { max-height: 64px; max-width: 200px; display: block; margin-bottom: 8px; }
+  .brand .business-name { font-size: 17pt; font-weight: bold; color: #111522; }
+  .brand .details { font-size: 8.5pt; color: #6b7185; line-height: 1.55; margin-top: 4px; }
+
+  .doc-meta { text-align: right; }
+  .doc-title { font-size: 24pt; font-weight: bold; letter-spacing: 3px; color: {{ accent }}; text-transform: uppercase; }
+  .doc-number { font-size: 10pt; color: #6b7185; margin-top: 4px; }
+  .doc-number strong { color: #111522; }
+  .chip { display: inline-block; margin-top: 10px; padding: 4px 14px; border-radius: 999px; background: {{ accent }}; color: #fff; font-size: 8pt; font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; }
+
+  .divider { height: 1px; background: #e6e8f0; margin: 26px 0; }
+
+  .amount-card { background: #f5f6fb; border-left: 5px solid {{ accent }}; border-radius: 6px; padding: 18px 22px; }
+  .amount-card .label { font-size: 8pt; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7185; }
+  .amount-card .amount { font-size: 26pt; font-weight: bold; color: #111522; margin: 4px 0 2px; }
+  .amount-card .words { font-size: 9.5pt; font-style: italic; color: #4a5064; }
+
+  .grid td { width: 50%; padding: 0 12px 20px 0; }
+  .field-label { font-size: 7.5pt; letter-spacing: 1.4px; text-transform: uppercase; color: #8a8fa3; margin-bottom: 4px; }
+  .field-value { font-size: 11pt; color: #1f2430; line-height: 1.4; }
+  .field-sub { font-size: 9pt; color: #6b7185; }
+
+  .signature { margin-top: 36px; }
+  .signature td.spacer { width: 55%; }
+  .sig-inner { text-align: center; }
+  .sig-inner img { max-height: 56px; display: block; margin: 0 auto 4px; }
+  .sig-line { border-top: 1px solid #1f2430; padding-top: 5px; font-size: 9.5pt; }
+  .sig-role { font-size: 7.5pt; letter-spacing: 1.2px; text-transform: uppercase; color: #8a8fa3; margin-top: 2px; }
+
+  .footer { margin-top: 40px; padding-top: 12px; border-top: 1px solid #e6e8f0; font-size: 8pt; color: #8a8fa3; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="accent-bar"></div>
+  <div class="page">
+
+    <table>
+      <tr>
+        <td class="brand">
+          {% if tenant.logo_url %}<img src="{{ logo_src or tenant.logo_url }}" alt="logo">{% endif %}
+          <div class="business-name">{{ tenant.business_name }}</div>
+          <div class="details">
+            {% if tenant.po_box %}P.O. Box {{ tenant.po_box }}<br>{% endif %}
+            {% if tenant.physical_address %}{{ tenant.physical_address }}<br>{% endif %}
+            {% if tenant.contact_phone or tenant.contact_email %}
+              {{ tenant.contact_phone or "" }}{% if tenant.contact_phone and tenant.contact_email %} &middot; {% endif %}{{ tenant.contact_email or "" }}
+            {% endif %}
+          </div>
+        </td>
+        <td class="doc-meta">
+          <div class="doc-title">Receipt</div>
+          <div class="doc-number">No. <strong>{{ receipt.reference_number }}</strong></div>
+          <div class="doc-number">{{ receipt.paid_at.strftime("%d %B %Y") }}</div>
+          <div class="chip">Paid</div>
+        </td>
+      </tr>
+    </table>
+
+    <div class="divider"></div>
+
+    <div class="amount-card">
+      <div class="label">Amount received</div>
+      <div class="amount">{{ amount_display }}</div>
+      <div class="words">{{ receipt.amount_in_words }}</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <table class="grid">
+      <tr>
+        <td>
+          <div class="field-label">Received from</div>
+          <div class="field-value">{{ customer.name }}</div>
+        </td>
+        <td>
+          <div class="field-label">Payment method</div>
+          <div class="field-value">{{ receipt.payment_method.value.replace("_", " ").title() }}</div>
+          {% if receipt.payment_reference %}<div class="field-sub">Ref: {{ receipt.payment_reference }}</div>{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <div class="field-label">Reason for payment</div>
+          <div class="field-value">{{ receipt.reason }}</div>
+        </td>
+        <td>
+          <div class="field-label">Balance</div>
+          <div class="field-value">{{ balance_display }}</div>
+        </td>
+      </tr>
+      {% if tenant.bank_name or tenant.bank_account_number %}
+      <tr>
+        <td colspan="2">
+          <div class="field-label">Bank details</div>
+          <div class="field-value">{{ tenant.bank_name or "" }} {{ tenant.bank_account_number or "" }}</div>
+        </td>
+      </tr>
+      {% endif %}
+    </table>
+
+    <table class="signature">
+      <tr>
+        <td class="spacer"></td>
+        <td>
+          <div class="sig-inner">
+            {% if receipt.signature_image_url %}<img src="{{ signature_src or receipt.signature_image_url }}" alt="signature">{% endif %}
+            <div class="sig-line">{{ receipt.issuer_printed_name }}</div>
+            <div class="sig-role">Authorised signature</div>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <div class="footer">This receipt documents a payment received locally. It was not processed online by this platform.</div>
+  </div>
+</body>
+</html>

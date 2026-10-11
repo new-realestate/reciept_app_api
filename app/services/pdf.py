@@ -39,8 +39,19 @@ def _local_file_uri(url: str | None) -> str | None:
     return path.as_uri()
 
 
+RECEIPT_TEMPLATES = {
+    "classic": "receipt.html",
+    "modern": "receipt_modern.html",
+}
+DEFAULT_RECEIPT_TEMPLATE = "classic"
+
+
 def render_receipt_html(*, tenant, user, customer, receipt, use_local_images: bool = False) -> str:
-    template = _env.get_template("receipt.html")
+    template_file = RECEIPT_TEMPLATES.get(
+        getattr(tenant, "receipt_template", None) or DEFAULT_RECEIPT_TEMPLATE,
+        RECEIPT_TEMPLATES[DEFAULT_RECEIPT_TEMPLATE],
+    )
+    template = _env.get_template(template_file)
     return template.render(
         logo_src=_local_file_uri(tenant.logo_url) if use_local_images else None,
         signature_src=_local_file_uri(receipt.signature_image_url) if use_local_images else None,

@@ -1,6 +1,9 @@
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr
+
+ReceiptTemplateName = Literal["classic", "modern"]
 
 
 class TenantOut(BaseModel):
@@ -14,6 +17,7 @@ class TenantOut(BaseModel):
     bank_name: str | None
     bank_account_number: str | None
     default_currency: str
+    receipt_template: ReceiptTemplateName = "classic"
 
     model_config = {"from_attributes": True}
 
@@ -26,6 +30,7 @@ class TenantUpdate(BaseModel):
     contact_email: EmailStr | None = None
     bank_name: str | None = None
     bank_account_number: str | None = None
+    receipt_template: ReceiptTemplateName | None = None
 
 
 class LogoUploadResponse(BaseModel):

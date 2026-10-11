@@ -36,6 +36,7 @@ CREATE TABLE tenants (
     bank_account_number TEXT,
     plan_tier           plan_tier NOT NULL DEFAULT 'free_trial',
     default_currency    CHAR(3) NOT NULL DEFAULT 'UGX',
+    receipt_template    TEXT NOT NULL DEFAULT 'classic',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at          TIMESTAMPTZ           -- soft delete
