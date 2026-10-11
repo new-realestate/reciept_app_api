@@ -24,8 +24,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
 
-    postmark_server_token: str = ""
-    postmark_from_email: str = "receipts@example.com"
+    # Gmail API (OAuth refresh-token flow); see scripts/gmail_authorize.py.
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_refresh_token: str = ""
+    gmail_sender_email: str = ""
 
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""

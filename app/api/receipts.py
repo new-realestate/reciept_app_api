@@ -258,7 +258,7 @@ async def _send_channel(
                     pdf_filename=f"{receipt.reference_number}.pdf",
                     mode=email_mode,
                 )
-                attempt.provider = "postmark"
+                attempt.provider = "gmail"
                 attempt.provider_message_id = response.get("MessageID")
             else:
                 sid = send_receipt_sms(

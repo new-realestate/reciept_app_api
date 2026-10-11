@@ -32,9 +32,13 @@ services:
         sync: false
       - key: STORAGE_DIR
         value: /app/static
-      - key: POSTMARK_SERVER_TOKEN
+      - key: GMAIL_CLIENT_ID
         sync: false
-      - key: POSTMARK_FROM_EMAIL
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: GMAIL_SENDER_EMAIL
         sync: false
       - key: TWILIO_ACCOUNT_SID
         sync: false

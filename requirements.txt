@@ -10,7 +10,6 @@ python-jose[cryptography]>=3.3
 passlib[bcrypt]>=1.7
 bcrypt==4.0.1
 python-multipart>=0.0.9
-postmarker>=1.0
 twilio>=9.3
 weasyprint>=62
 jinja2>=3.1

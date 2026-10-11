@@ -3,14 +3,14 @@
 FastAPI backend for a local-payments-only receipt issuance app. A landlord/business owner
 (or authorized staff) records a payment already received locally (cash, bank transfer,
 mobile money, or cheque) and the app generates a formatted receipt (PDF + hosted HTML view)
-and delivers it to the payer by email (Postmark) and/or SMS (Twilio). The app never
+and delivers it to the payer by email (Gmail API) and/or SMS (Twilio). The app never
 processes or moves money.
 
 ## Tech stack
 
 - FastAPI (Python 3.11+)
 - PostgreSQL via SQLAlchemy 2.0 (async) + Alembic migrations
-- Postmark for email delivery
+- Gmail API (OAuth refresh token) for email delivery
 - Twilio for SMS delivery
 - WeasyPrint + Jinja2 for PDF rendering
 - JWT auth (python-jose + passlib/bcrypt)
@@ -25,7 +25,7 @@ app/
   models/                 SQLAlchemy models (mirrors schema.sql)
   schemas/                Pydantic request/response models
   api/                    auth, tenant, customers, receipts, webhooks routers
-  services/               email (Postmark), sms (Twilio), pdf (WeasyPrint), numbers (amount-to-words)
+  services/               email (Gmail API), sms (Twilio), pdf (WeasyPrint), numbers (amount-to-words)
   templates/receipt.html  Jinja2 template rendered to PDF and used for the hosted view
   db/                     session factory + Alembic migrations
 tests/                    pytest suite (auth, receipts, delivery/webhooks)
@@ -38,7 +38,7 @@ schema.sql                Source-of-truth reference schema (Postgres)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in JWT_SECRET, Postmark/Twilio credentials, DATABASE_URL
+cp .env.example .env   # fill in JWT_SECRET, Gmail/Twilio credentials, DATABASE_URL
 ```
 
 ### Database
@@ -68,7 +68,7 @@ Visit `/docs` for interactive OpenAPI docs.
 pytest
 ```
 
-Tests spin up an in-memory SQLite database per test and stub out Postmark/Twilio calls —
+Tests spin up an in-memory SQLite database per test and stub out Gmail/Twilio calls —
 no external credentials or network access needed to run the suite.
 
 ## Environment variables
@@ -79,7 +79,7 @@ See `.env.example`. All secrets are read via `pydantic-settings`; nothing is har
 |---|---|
 | `DATABASE_URL` | Async SQLAlchemy URL, e.g. `postgresql+asyncpg://user:pass@host/db` |
 | `JWT_SECRET` | Signing secret for access tokens |
-| `POSTMARK_SERVER_TOKEN` / `POSTMARK_FROM_EMAIL` | Email delivery |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` / `GMAIL_SENDER_EMAIL` | Email delivery via the Gmail API. Get the refresh token with `uv run --with google-auth-oauthlib python scripts/gmail_authorize.py` (OAuth consent screen must be published, not in Testing, or tokens expire after 7 days) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | SMS delivery |
 | `APP_BASE_URL` | Used to build hosted receipt links (`/r/{token}`) and email/reset links |
 | `STORAGE_DIR` | Local disk path for uploaded logos/signatures and generated PDFs (swap for S3/GCS later without changing callers — see `app/services/pdf.py`) |
