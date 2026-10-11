@@ -45,6 +45,13 @@ class Settings(BaseSettings):
         r"^https://recieptappportal(-[a-z0-9]+)?-mmadiba724s-projects\.vercel\.app$"
     )
 
+    # Opt-in seeding of pre-verified users on startup (no email API needed).
+    # SEED_DEFAULT_USERS is a JSON list, e.g.
+    # [{"email": "admin@example.com", "password": "...", "full_name": "Admin",
+    #   "business_name": "Demo Business", "role": "owner"}]
+    seed_default_users_enabled: bool = False
+    seed_default_users: str = ""
+
     @property
     def cors_allow_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allow_origins_raw.split(",") if origin.strip()]

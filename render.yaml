@@ -42,3 +42,7 @@ services:
         sync: false
       - key: TWILIO_FROM_NUMBER
         sync: false
+      - key: SEED_DEFAULT_USERS_ENABLED
+        sync: false
+      - key: SEED_DEFAULT_USERS
+        sync: false

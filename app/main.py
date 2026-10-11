@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -5,10 +7,19 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import auth, customers, receipts, tenant, webhooks
 from app.core.config import get_settings
+from app.db.seed import seed_default_users
 
 settings = get_settings()
 
-app = FastAPI(title="Receipt Issuance App", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.seed_default_users_enabled:
+        await seed_default_users()
+    yield
+
+
+app = FastAPI(title="Receipt Issuance App", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
