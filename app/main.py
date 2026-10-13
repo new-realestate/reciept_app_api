@@ -5,22 +5,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, customers, receipts, tenant, webhooks
+from app.api import audit, auth, customers, invoices, public_docs, quotations, receipts, reminders, schedules, tenant, webhooks
 from app.core.config import get_settings
+from app.core.logging import RequestLogMiddleware, setup_logging
 from app.db.seed import seed_default_users
 
 settings = get_settings()
+setup_logging(settings.log_level, settings.log_json)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.seed_default_users_enabled:
         await seed_default_users()
+    scheduler = None
+    if settings.scheduler_enabled:
+        from app.services.scheduler import start_scheduler
+
+        scheduler = start_scheduler()
     yield
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="Receipt Issuance App", version="1.0.0", lifespan=lifespan)
 
+app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins,
@@ -28,6 +38,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Request-ID"],
 )
 
 app.mount("/static", StaticFiles(directory=settings.storage_dir), name="static")
@@ -38,6 +49,12 @@ app.include_router(customers.router)
 app.include_router(receipts.router)
 app.include_router(receipts.public_router)
 app.include_router(webhooks.router)
+app.include_router(invoices.router)
+app.include_router(quotations.router)
+app.include_router(schedules.router)
+app.include_router(reminders.router)
+app.include_router(audit.router)
+app.include_router(public_docs.router)
 
 
 @app.exception_handler(HTTPException)

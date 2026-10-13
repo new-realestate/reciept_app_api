@@ -93,6 +93,22 @@ def send_password_reset_email(*, to_email: str, reset_url: str) -> dict[str, Any
     )
 
 
+def send_document_email(
+    *,
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    pdf_bytes: bytes | None = None,
+    pdf_filename: str | None = None,
+) -> dict[str, Any]:
+    """Generic transactional email (invoices, quotations, reminders) with an optional PDF attachment."""
+    attachment = (pdf_filename, pdf_bytes) if pdf_bytes and pdf_filename else None
+    return _send(
+        to_email=to_email, subject=subject, text_body=text_body, html_body=html_body, attachment=attachment
+    )
+
+
 def send_receipt_email(
     *,
     to_email: str,

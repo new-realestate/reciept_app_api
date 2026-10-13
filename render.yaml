@@ -46,6 +46,10 @@ services:
         sync: false
       - key: TWILIO_FROM_NUMBER
         sync: false
+      # Reminders, schedule occurrences and quotation expiry run in-process; keep this
+      # service at a single instance (it already is: one disk, one in-memory rate limiter).
+      - key: SCHEDULER_ENABLED
+        value: "true"
       - key: SEED_DEFAULT_USERS_ENABLED
         sync: false
       - key: SEED_DEFAULT_USERS

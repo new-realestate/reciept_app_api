@@ -1,7 +1,8 @@
 import uuid
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 ReceiptTemplateName = Literal["classic", "modern"]
 
@@ -18,6 +19,7 @@ class TenantOut(BaseModel):
     bank_account_number: str | None
     default_currency: str
     receipt_template: ReceiptTemplateName = "classic"
+    timezone: str = "Africa/Kampala"
 
     model_config = {"from_attributes": True}
 
@@ -31,6 +33,24 @@ class TenantUpdate(BaseModel):
     bank_name: str | None = None
     bank_account_number: str | None = None
     receipt_template: ReceiptTemplateName | None = None
+    default_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _valid_timezone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Unknown timezone; use an IANA name such as Africa/Kampala") from exc
+        return v
+
+    @field_validator("default_currency")
+    @classmethod
+    def _upper_currency(cls, v: str | None) -> str | None:
+        return v.upper() if v else v
 
 
 class LogoUploadResponse(BaseModel):

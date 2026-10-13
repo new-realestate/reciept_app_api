@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ doc.label.title() }} {{ doc.number }}</title>
+<style>
+  @page { size: A4; margin: 2cm 1.8cm; }
+  body { margin: 0; }
+  {% include "_document_css.html" %}
+</style>
+</head>
+<body>
+{% include "_document_body.html" %}
+</body>
+</html>

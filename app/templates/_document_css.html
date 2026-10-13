@@ -1,0 +1,30 @@
+.doc { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1a1a1a; line-height: 1.4; }
+.doc .letterhead { display: flex; align-items: center; border-bottom: 3px solid {{ doc.accent }}; padding-bottom: 12px; margin-bottom: 18px; }
+.doc .logo { max-height: 64px; max-width: 160px; margin-right: 16px; }
+.doc .business-name { font-size: 17pt; font-weight: bold; }
+.doc .details { font-size: 9pt; color: #555; }
+.doc .title-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.doc .doc-label { font-size: 22pt; font-weight: bold; letter-spacing: 3px; color: {{ doc.accent }}; }
+.doc .sublabel { font-size: 9pt; color: #8a4b00; background: #fff4e0; border: 1px solid #f0c987; padding: 3px 8px; margin-top: 4px; display: inline-block; }
+.doc .status { font-size: 9.5pt; font-weight: bold; letter-spacing: 1px; padding: 4px 10px; border: 2px solid; border-radius: 4px; }
+.doc .status-success { color: #1b7a3c; } .doc .status-danger { color: #b3261e; } .doc .status-warning { color: #9a6700; }
+.doc .status-info { color: #2457b8; } .doc .status-muted { color: #666; }
+.doc .meta { display: flex; justify-content: space-between; margin-bottom: 18px; gap: 16px; }
+.doc .meta-title { font-size: 8.5pt; text-transform: uppercase; color: #777; letter-spacing: 1px; }
+.doc .customer-name { font-weight: bold; font-size: 11.5pt; }
+.doc .meta-right { text-align: right; } .doc .meta-right .k { color: #777; margin-right: 6px; }
+.doc .doc-title { font-size: 13pt; font-weight: bold; margin-bottom: 4px; }
+.doc .doc-desc { color: #444; margin-bottom: 10px; white-space: pre-wrap; }
+.doc table { width: 100%; border-collapse: collapse; }
+.doc table.lines th { background: {{ doc.accent }}; color: #fff; text-align: left; padding: 7px 8px; font-size: 9.5pt; }
+.doc table.lines td { padding: 8px; border-bottom: 1px solid #e2e2e2; vertical-align: top; }
+.doc .num { text-align: right; white-space: nowrap; }
+.doc table.lines th.num { text-align: right; }
+.doc table.totals { width: 55%; margin: 14px 0 0 auto; }
+.doc table.totals td { padding: 5px 8px; }
+.doc table.totals tr.strong td { font-weight: bold; font-size: 12pt; border-top: 2px solid #1a1a1a; }
+.doc .block { margin-top: 18px; }
+.doc .block-title { font-weight: bold; font-size: 9.5pt; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 4px; }
+.doc table.payments td { padding: 4px 8px; border-bottom: 1px solid #eee; }
+.doc .pre { white-space: pre-wrap; }
+.doc .footer-note { margin-top: 30px; font-size: 8.5pt; color: #777; text-align: center; }

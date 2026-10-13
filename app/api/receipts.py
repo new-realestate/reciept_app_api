@@ -3,9 +3,9 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit_event
@@ -22,9 +22,8 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.receipt import DeliveryAttemptOut, ReceiptCreate, ReceiptDetailOut, ReceiptOut, SendReceiptRequest
 from app.services.email import send_receipt_email
-from app.services.numbers import amount_to_words
-from app.services.pdf import format_money, read_stored_pdf, render_receipt_html, render_receipt_pdf_bytes, store_receipt_pdf
-from app.services.reference_numbers import next_reference_number
+from app.services.pdf import format_money, read_stored_pdf, render_receipt_html
+from app.services.receipts import create_receipt_record
 from app.services.sms import InvalidPhoneNumberError, send_receipt_sms, to_e164
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
@@ -96,40 +95,19 @@ async def create_receipt(
 
     customer = await _get_or_create_customer(db, current_user.tenant_id, payload)
 
-    currency = payload.currency or tenant.default_currency
-    amount_in_words = amount_to_words(payload.amount_cents, currency)
-    reference_number = await next_reference_number(db, current_user.tenant_id)
-
-    receipt = Receipt(
-        tenant_id=current_user.tenant_id,
-        customer_id=customer.id,
-        reference_number=reference_number,
-        currency=currency,
+    receipt = await create_receipt_record(
+        db,
+        tenant=tenant,
+        user=user,
+        customer=customer,
         amount_cents=payload.amount_cents,
-        amount_in_words=amount_in_words,
-        balance_cents=payload.balance_cents,
+        currency=payload.currency,
         reason=payload.reason,
         payment_method=payload.payment_method,
         payment_reference=payload.payment_reference,
         paid_at=payload.paid_at,
-        issued_by_user_id=user.id,
-        issuer_printed_name=user.full_name,
-        signature_image_url=user.signature_image_url,
+        balance_cents=payload.balance_cents,
         corrects_receipt_id=payload.corrects_receipt_id,
-    )
-    db.add(receipt)
-    await db.flush()
-
-    pdf_bytes = render_receipt_pdf_bytes(tenant=tenant, user=user, customer=customer, receipt=receipt)
-    receipt.pdf_url = store_receipt_pdf(tenant_id=str(tenant.id), receipt_id=str(receipt.id), pdf_bytes=pdf_bytes)
-
-    await record_audit_event(
-        db,
-        tenant_id=tenant.id,
-        actor_user_id=user.id,
-        action="receipt.created",
-        entity_type="receipt",
-        entity_id=receipt.id,
     )
     await db.commit()
     await db.refresh(receipt)
@@ -138,11 +116,14 @@ async def create_receipt(
 
 @router.get("", response_model=list[ReceiptOut])
 async def list_receipts(
+    response: Response,
     payer_name: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     amount_cents: int | None = Query(default=None),
     status_filter: ReceiptStatus | None = Query(default=None, alias="status"),
+    limit: int = Query(default=200, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -159,7 +140,10 @@ async def list_receipts(
     if status_filter:
         stmt = stmt.where(Receipt.status == status_filter)
 
-    stmt = stmt.order_by(Receipt.created_at.desc()).limit(200)
+    # Still a plain array (existing clients unchanged); the full match count is in X-Total-Count.
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    response.headers["X-Total-Count"] = str(total)
+    stmt = stmt.order_by(Receipt.created_at.desc(), Receipt.id).limit(limit).offset(offset)
     result = await db.execute(stmt)
     return result.scalars().all()
 

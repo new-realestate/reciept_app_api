@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     seed_default_users_enabled: bool = False
     seed_default_users: str = ""
 
+    # Application logging (see app/core/logging.py). LOG_JSON=true emits one JSON object per line.
+    log_level: str = "INFO"
+    log_json: bool = False
+
+    # In-process scheduler for reminders, schedule occurrences and quotation expiry.
+    # Single-instance only (the app already assumes one process); disabled in tests.
+    scheduler_enabled: bool = False
+    reminder_poll_seconds: int = 300
+
+    # Public document pages (/i/{token}, /q/{token}): requests per minute per IP and path.
+    public_rate_limit_per_minute: int = 60
+
     @property
     def cors_allow_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allow_origins_raw.split(",") if origin.strip()]

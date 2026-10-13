@@ -71,6 +71,19 @@ def render_receipt_pdf_bytes(*, tenant, user, customer, receipt) -> bytes:
     return HTML(string=html_content, base_url=str(TEMPLATES_DIR)).write_pdf()
 
 
+def local_file_uri(url: str | None) -> str | None:
+    return _local_file_uri(url)
+
+
+def render_document_html(view: dict, *, template: str = "document.html", **extra) -> str:
+    """Render an invoice/quotation view (see services/doc_views.py). Context key is `doc`."""
+    return _env.get_template(template).render(doc=view, **extra)
+
+
+def render_document_pdf_bytes(view: dict) -> bytes:
+    return HTML(string=render_document_html(view), base_url=str(TEMPLATES_DIR)).write_pdf()
+
+
 def read_stored_pdf(*, tenant_id: str, receipt_id: str) -> bytes | None:
     settings = get_settings()
     file_path = Path(settings.storage_dir) / "pdfs" / tenant_id / f"{receipt_id}.pdf"
