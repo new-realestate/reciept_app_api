@@ -36,6 +36,7 @@ CREATE TABLE tenants (
     bank_account_number TEXT,
     plan_tier           plan_tier NOT NULL DEFAULT 'free_trial',
     default_currency    CHAR(3) NOT NULL DEFAULT 'UGX',
+    receipt_template    TEXT NOT NULL DEFAULT 'classic',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at          TIMESTAMPTZ           -- soft delete
@@ -238,3 +239,133 @@ CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_customers_updated_at BEFORE UPDATE ON customers
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Migration 0003: invoicing, quotations, payment schedules, notifications.
+-- Mirrors app/db/migrations/versions/0003_invoicing_quotes_schedules.py.
+-- Money is integer minor units; statuses are plain text validated by the app.
+-- paid / partially_paid / overdue are derived from amounts and due_date, not stored.
+-- ---------------------------------------------------------------------------
+ALTER TABLE tenants ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Africa/Kampala';
+ALTER TABLE tenants ADD COLUMN reminder_settings JSONB;
+
+CREATE TABLE document_counters (
+    tenant_id  UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    kind       VARCHAR(16) NOT NULL,
+    last_value INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, kind)
+);
+
+CREATE TABLE quotations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    number TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'draft',   -- draft|sent|viewed|accepted|rejected|expired|cancelled
+    title TEXT, description TEXT,
+    currency CHAR(3) NOT NULL,
+    issue_date DATE NOT NULL, valid_until DATE NOT NULL,
+    subtotal_cents BIGINT NOT NULL DEFAULT 0, discount_percent NUMERIC(5,2),
+    discount_cents BIGINT NOT NULL DEFAULT 0, tax_cents BIGINT NOT NULL DEFAULT 0,
+    total_cents BIGINT NOT NULL DEFAULT 0 CHECK (total_cents >= 0),
+    terms TEXT, notes TEXT, internal_notes TEXT,
+    public_token VARCHAR(64) UNIQUE, token_revoked_at TIMESTAMPTZ,
+    sent_at TIMESTAMPTZ, viewed_at TIMESTAMPTZ, responded_at TIMESTAMPTZ,
+    accepted_name TEXT, response_comment TEXT, snapshot JSONB,
+    created_by_user_id UUID REFERENCES users(id), cancelled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_quotations_tenant_number UNIQUE (tenant_id, number)
+);
+CREATE TABLE quotation_line_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    quotation_id UUID NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL,
+    quantity NUMERIC(12,3) NOT NULL, unit_price_cents BIGINT NOT NULL,
+    tax_rate NUMERIC(5,2), line_total_cents BIGINT NOT NULL
+);
+
+CREATE TABLE payment_schedules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    description TEXT NOT NULL, reference_label TEXT,
+    amount_cents BIGINT NOT NULL, currency CHAR(3) NOT NULL,
+    frequency VARCHAR(16) NOT NULL,               -- once|weekly|monthly|quarterly|annually
+    first_due_date DATE NOT NULL, end_date DATE, max_occurrences INTEGER,
+    status VARCHAR(16) NOT NULL DEFAULT 'active', -- active|paused|completed|cancelled
+    reminders_enabled BOOLEAN NOT NULL DEFAULT true, reminder_overrides JSONB,
+    auto_invoice BOOLEAN NOT NULL DEFAULT false,
+    created_by_user_id UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE schedule_occurrences (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    schedule_id UUID NOT NULL REFERENCES payment_schedules(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL, due_date DATE NOT NULL, amount_cents BIGINT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'expected', -- expected|invoiced|paid|skipped
+    amount_paid_cents BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_occurrence_schedule_seq UNIQUE (schedule_id, seq)
+);
+
+CREATE TABLE invoices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    number TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'draft',   -- draft|issued|cancelled
+    title TEXT, currency CHAR(3) NOT NULL,
+    issue_date DATE NOT NULL, due_date DATE NOT NULL,
+    subtotal_cents BIGINT NOT NULL DEFAULT 0, discount_percent NUMERIC(5,2),
+    discount_cents BIGINT NOT NULL DEFAULT 0, tax_cents BIGINT NOT NULL DEFAULT 0,
+    total_cents BIGINT NOT NULL DEFAULT 0 CHECK (total_cents >= 0),
+    amount_paid_cents BIGINT NOT NULL DEFAULT 0,
+    notes TEXT, payment_instructions TEXT,
+    public_token VARCHAR(64) UNIQUE, token_revoked_at TIMESTAMPTZ,
+    quotation_id UUID UNIQUE REFERENCES quotations(id) ON DELETE SET NULL,
+    schedule_occurrence_id UUID UNIQUE REFERENCES schedule_occurrences(id) ON DELETE SET NULL,
+    reminders_enabled BOOLEAN NOT NULL DEFAULT true, reminder_overrides JSONB, snapshot JSONB,
+    created_by_user_id UUID REFERENCES users(id),
+    issued_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ, cancel_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_invoices_tenant_number UNIQUE (tenant_id, number),
+    CONSTRAINT chk_invoice_paid_range CHECK (amount_paid_cents >= 0 AND amount_paid_cents <= total_cents)
+);
+CREATE TABLE invoice_line_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL,
+    quantity NUMERIC(12,3) NOT NULL, unit_price_cents BIGINT NOT NULL,
+    tax_rate NUMERIC(5,2), line_total_cents BIGINT NOT NULL
+);
+CREATE TABLE invoice_payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE RESTRICT,
+    receipt_id UUID NOT NULL UNIQUE REFERENCES receipts(id) ON DELETE RESTRICT,
+    amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
+    paid_at DATE NOT NULL, method VARCHAR(32) NOT NULL, reference TEXT,
+    idempotency_key VARCHAR(128), recorded_by_user_id UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_invoice_payments_idem UNIQUE (tenant_id, idempotency_key)
+);
+
+CREATE TABLE notification_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    kind VARCHAR(32) NOT NULL, subject_type VARCHAR(32) NOT NULL, subject_id UUID NOT NULL,
+    channel VARCHAR(8) NOT NULL, recipient_party VARCHAR(16) NOT NULL DEFAULT 'customer', recipient TEXT,
+    scheduled_for TIMESTAMPTZ NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'scheduled', -- scheduled|sending|sent|failed|skipped|cancelled
+    skip_reason TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+    dedupe_key VARCHAR(200) NOT NULL UNIQUE, payload JSONB, sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE notification_attempts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    event_id UUID NOT NULL REFERENCES notification_events(id) ON DELETE CASCADE,
+    attempt_no INTEGER NOT NULL, status VARCHAR(16) NOT NULL,
+    provider VARCHAR(16), provider_message_id TEXT, response JSONB,
+    attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

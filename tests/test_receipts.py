@@ -174,3 +174,34 @@ async def test_correction_references_original_receipt(client, monkeypatch):
     )
     assert correction.status_code == 201
     assert correction.json()["corrects_receipt_id"] == original_id
+
+
+async def test_receipt_template_selection_changes_layout_and_rejects_unknown(client, monkeypatch):
+    headers = await _signup_and_login(client, monkeypatch)
+    customer_id = await _create_customer(client, headers)
+
+    assert (await client.get("/tenant/me", headers=headers)).json()["receipt_template"] == "classic"
+
+    bad = await client.patch("/tenant/me", json={"receipt_template": "fancy"}, headers=headers)
+    assert bad.status_code == 422
+
+    ok = await client.patch("/tenant/me", json={"receipt_template": "modern"}, headers=headers)
+    assert ok.status_code == 200 and ok.json()["receipt_template"] == "modern"
+
+    created = await client.post(
+        "/receipts",
+        json={
+            "customer_id": customer_id,
+            "amount_cents": 20000,
+            "reason": "Rent",
+            "payment_method": "cash",
+            "paid_at": "2026-07-01",
+        },
+        headers=headers,
+    )
+    view = await client.get(f"/r/{created.json()['hosted_view_token']}")
+    assert "Amount received" in view.text
+
+    await client.patch("/tenant/me", json={"receipt_template": "classic"}, headers=headers)
+    view = await client.get(f"/r/{created.json()['hosted_view_token']}")
+    assert "Amount received" not in view.text and "Payment Receipt" in view.text

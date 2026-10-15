@@ -1,0 +1,24 @@
+# Tooling configuration only (the project is installed from requirements.txt).
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+extend-exclude = [".venv", ".venv-msys2", "static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "B008",  # FastAPI uses Depends(...) in argument defaults
+    "E501",  # long lines are tolerated; the formatter is not enforced
+    "UP017", "UP035", "UP037", "UP042",  # existing str+Enum style is kept
+    "B905",  # zip() lengths are equal by construction here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/db/migrations/versions/*.py" = ["I001", "UP007", "UP006"]
+"tests/*" = ["E402", "B011"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+exclude = ["^\\.venv", "^tests/", "^app/db/migrations/"]

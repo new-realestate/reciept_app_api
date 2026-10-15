@@ -7,7 +7,8 @@ columns fall back to portable equivalents there via `with_variant`.
 
 import enum
 
-from sqlalchemy import JSON, Enum as SAEnum, String, Uuid
+from sqlalchemy import JSON, String, Uuid
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import CITEXT, JSONB
 
 

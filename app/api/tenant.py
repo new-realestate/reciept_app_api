@@ -39,8 +39,14 @@ async def _save_image(upload: UploadFile, subdir: str, stem: str) -> str:
     ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[upload.content_type]
     target_dir = Path(settings.storage_dir) / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{stem}.{ext}"
+    # A fresh filename per upload so the URL changes and browsers don't keep
+    # showing the previously cached image after a replace.
+    filename = f"{stem}-{uuid.uuid4().hex[:8]}.{ext}"
     (target_dir / filename).write_bytes(contents)
+    # Remove earlier uploads for this owner (old and new naming schemes).
+    for old in target_dir.glob(f"{stem}[.-]*"):
+        if old.name != filename:
+            old.unlink(missing_ok=True)
 
     return f"{settings.app_base_url}/static/{subdir}/{filename}"
 

@@ -18,7 +18,7 @@ async def next_reference_number(db: AsyncSession, tenant_id: uuid.UUID) -> str:
     """
     lock_stmt = select(Tenant.id).where(Tenant.id == tenant_id)
     if db.get_bind().dialect.name != "sqlite":
-        lock_stmt = lock_stmt.with_for_update()
+        lock_stmt = lock_stmt.with_for_update(key_share=True)
     await db.execute(lock_stmt)
 
     count_result = await db.execute(select(func.count()).select_from(Receipt).where(Receipt.tenant_id == tenant_id))

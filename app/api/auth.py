@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +22,8 @@ from app.schemas.auth import (
     VerifyRequest,
 )
 from app.services.email import send_password_reset_email, send_verification_email
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(auth_rate_limiter)])
 
@@ -54,7 +57,11 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
 
     settings = get_settings()
     verify_url = f"{settings.app_base_url}/auth/verify?token={verification_token}"
-    send_verification_email(to_email=user.email, verify_url=verify_url)
+    try:
+        send_verification_email(to_email=user.email, verify_url=verify_url)
+    except Exception:
+        # The account is already committed; don't fail signup because email is down.
+        logger.exception("Failed to send verification email to %s", user.email)
 
     return SignupResponse(tenant_id=tenant.id, user_id=user.id, email=user.email)
 
@@ -104,7 +111,10 @@ async def request_password_reset(payload: PasswordResetRequest, db: AsyncSession
 
         settings = get_settings()
         reset_url = f"{settings.app_base_url}/auth/password-reset/confirm?token={reset_token}"
-        send_password_reset_email(to_email=user.email, reset_url=reset_url)
+        try:
+            send_password_reset_email(to_email=user.email, reset_url=reset_url)
+        except Exception:
+            logger.exception("Failed to send password reset email to %s", user.email)
 
     return {"detail": "If that email is registered, a reset link has been sent"}
 

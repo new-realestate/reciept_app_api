@@ -7,7 +7,7 @@ from sqlalchemy.sql import func
 
 from app.db.session import Base
 from app.models.enums import PlanTier
-from app.models.types import PortableEnum, UUIDType
+from app.models.types import JSONBType, PortableEnum, UUIDType
 
 plan_tier_enum = PortableEnum(PlanTier, name="plan_tier")
 
@@ -27,6 +27,15 @@ class Tenant(Base):
     bank_account_number: Mapped[str | None] = mapped_column(Text)
     plan_tier: Mapped[PlanTier] = mapped_column(plan_tier_enum, nullable=False, default=PlanTier.free_trial)
     default_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="UGX")
+    # Which receipt PDF/hosted-view layout to use; see app/services/pdf.py RECEIPT_TEMPLATES.
+    receipt_template: Mapped[str] = mapped_column(Text, nullable=False, default="classic", server_default="classic")
+    # IANA timezone used to decide when reminders go out and what "today" means.
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Africa/Kampala", server_default="Africa/Kampala"
+    )
+    # Reminder policy defaults, e.g. {"enabled": true, "offsets": [-3, 0, 3], "channels": ["email", "sms"],
+    # "send_hour": 9, "notify_business": false}. NULL means use the application defaults.
+    reminder_settings: Mapped[dict | None] = mapped_column(JSONBType())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

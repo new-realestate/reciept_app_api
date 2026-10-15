@@ -26,7 +26,7 @@
 <body>
 
   <div class="letterhead">
-    {% if tenant.logo_url %}<img src="{{ tenant.logo_url }}" alt="logo">{% endif %}
+    {% if tenant.logo_url %}<img src="{{ logo_src or tenant.logo_url }}" alt="logo">{% endif %}
     <div>
       <div class="business-name">{{ tenant.business_name }}</div>
       <div class="details">
@@ -80,7 +80,7 @@
 
   <div class="signature-block">
     <div class="sig-inner">
-      {% if receipt.signature_image_url %}<img src="{{ receipt.signature_image_url }}" alt="signature">{% endif %}
+      {% if receipt.signature_image_url %}<img src="{{ signature_src or receipt.signature_image_url }}" alt="signature">{% endif %}
       <div class="signature-line">{{ receipt.issuer_printed_name }}</div>
     </div>
   </div>

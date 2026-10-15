@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>{{ doc.label.title() }} {{ doc.number }} · {{ doc.tenant.business_name }}</title>
+<style>
+  body { margin: 0; background: #f3f4f8; padding: 16px; font-family: Helvetica, Arial, sans-serif; }
+  .page { max-width: 820px; margin: 0 auto; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .btn { display: inline-block; padding: 10px 16px; border-radius: 6px; border: 1px solid #c9ccd6; background: #fff; color: #1a1a1a; text-decoration: none; font-size: 14px; cursor: pointer; font-family: inherit; }
+  .btn.primary { background: {{ doc.accent }}; border-color: {{ doc.accent }}; color: #fff; }
+  .btn.danger { color: #b3261e; border-color: #e3b5b2; }
+  .sheet { background: #fff; padding: 28px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow-x: auto; }
+  .panel { background: #fff; padding: 20px 28px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-top: 16px; }
+  .panel h2 { margin: 0 0 8px; font-size: 16px; }
+  .panel label { display: block; font-size: 13px; margin: 10px 0 4px; color: #444; }
+  .panel input[type=text], .panel textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #c9ccd6; border-radius: 6px; font: inherit; }
+  .panel .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .notice { padding: 12px 14px; border-radius: 6px; background: #eef3ff; color: #1d3f8f; margin-bottom: 12px; font-size: 14px; }
+  .notice.ok { background: #e6f6ec; color: #17653a; } .notice.bad { background: #fdecea; color: #8c1d18; }
+  {% include "_document_css.html" %}
+  .doc { font-size: 14px; }
+  .doc .doc-label { font-size: 26px; }
+  @media (max-width: 600px) { .sheet { padding: 16px; } .doc .meta { flex-direction: column; } .doc .meta-right { text-align: left; } .doc table.totals { width: 100%; } }
+</style>
+</head>
+<body>
+<div class="page">
+  {% if message %}<div class="notice {{ message_tone or '' }}">{{ message }}</div>{% endif %}
+  <div class="toolbar">
+    <a class="btn primary" href="{{ pdf_href }}">Download PDF</a>
+  </div>
+  <div class="sheet">{% include "_document_body.html" %}</div>
+
+  {% if respond %}
+  <div class="panel">
+    <h2>Your response</h2>
+    <p>Valid until {{ doc.dates[1][1] }}. By accepting you confirm you agree to the quoted price and terms. This is a confirmation of acceptance, not a legally binding electronic signature.</p>
+    <form method="post" action="{{ respond.accept_href }}">
+      <label for="name">Your full name</label>
+      <input id="name" name="name" type="text" required maxlength="200" autocomplete="name">
+      <label><input type="checkbox" name="confirm" value="yes" required> I confirm I accept this quotation.</label>
+      <div class="row"><button class="btn primary" type="submit">Accept quotation</button></div>
+    </form>
+    <hr style="margin:20px 0;border:0;border-top:1px solid #e5e5e5">
+    <form method="post" action="{{ respond.reject_href }}">
+      <label for="comment">Reason for declining (optional)</label>
+      <textarea id="comment" name="comment" rows="3" maxlength="1000"></textarea>
+      <div class="row"><button class="btn danger" type="submit">Decline quotation</button></div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>

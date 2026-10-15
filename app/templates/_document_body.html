@@ -1,0 +1,91 @@
+<div class="doc">
+  <div class="letterhead">
+    {% if doc.logo_src or doc.tenant.logo_url %}<img class="logo" src="{{ doc.logo_src or doc.tenant.logo_url }}" alt="logo">{% endif %}
+    <div class="biz">
+      <div class="business-name">{{ doc.tenant.business_name }}</div>
+      <div class="details">
+        {% if doc.tenant.po_box %}P.O. Box {{ doc.tenant.po_box }}<br>{% endif %}
+        {% if doc.tenant.physical_address %}{{ doc.tenant.physical_address }}<br>{% endif %}
+        {% if doc.tenant.contact_phone or doc.tenant.contact_email %}
+          {{ doc.tenant.contact_phone or "" }}{% if doc.tenant.contact_phone and doc.tenant.contact_email %} &middot; {% endif %}{{ doc.tenant.contact_email or "" }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="title-row">
+    <div>
+      <div class="doc-label">{{ doc.label }}</div>
+      {% if doc.sublabel %}<div class="sublabel">{{ doc.sublabel }}</div>{% endif %}
+    </div>
+    <div class="status status-{{ doc.status_tone }}">{{ doc.status_label }}</div>
+  </div>
+
+  <div class="meta">
+    <div>
+      <div class="meta-title">{% if doc.kind == "invoice" %}Bill to{% else %}Prepared for{% endif %}</div>
+      <div class="customer-name">{{ doc.customer.name }}</div>
+      {% if doc.customer.email %}<div>{{ doc.customer.email }}</div>{% endif %}
+      {% if doc.customer.phone %}<div>{{ doc.customer.phone }}</div>{% endif %}
+    </div>
+    <div class="meta-right">
+      <div><span class="k">{{ doc.label.title() }} no.</span> <strong>{{ doc.number }}</strong></div>
+      {% for label, value in doc.dates %}<div><span class="k">{{ label }}</span> {{ value }}</div>{% endfor %}
+    </div>
+  </div>
+
+  {% if doc.title %}<div class="doc-title">{{ doc.title }}</div>{% endif %}
+  {% if doc.description %}<div class="doc-desc">{{ doc.description }}</div>{% endif %}
+
+  <table class="lines">
+    <thead>
+      <tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Tax</th><th class="num">Amount</th></tr>
+    </thead>
+    <tbody>
+      {% for line in doc.lines %}
+      <tr>
+        <td>{{ line.description }}</td>
+        <td class="num">{{ line.quantity }}</td>
+        <td class="num">{{ line.unit_price }}</td>
+        <td class="num">{{ line.tax_rate or "—" }}</td>
+        <td class="num">{{ line.total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <table class="totals">
+    {% for label, value, strong in doc.totals %}
+    <tr class="{{ 'strong' if strong else '' }}"><td>{{ label }}</td><td class="num">{{ value }}</td></tr>
+    {% endfor %}
+  </table>
+
+  {% if doc.payments %}
+  <div class="block">
+    <div class="block-title">Payments received</div>
+    <table class="payments">
+      {% for p in doc.payments %}
+      <tr><td>{{ p.date }}</td><td>{{ p.method }}{% if p.reference %} (Ref: {{ p.reference }}){% endif %}</td><td class="num">{{ p.amount }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if doc.payment_instructions or doc.tenant.bank_name or doc.tenant.bank_account_number %}
+  {% if doc.kind == "invoice" %}
+  <div class="block">
+    <div class="block-title">Payment instructions</div>
+    {% if doc.payment_instructions %}<div class="pre">{{ doc.payment_instructions }}</div>{% endif %}
+    {% if doc.tenant.bank_name or doc.tenant.bank_account_number %}<div>Bank: {{ doc.tenant.bank_name or "" }} {{ doc.tenant.bank_account_number or "" }}</div>{% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if doc.terms %}<div class="block"><div class="block-title">Terms and conditions</div><div class="pre">{{ doc.terms }}</div></div>{% endif %}
+  {% if doc.notes %}<div class="block"><div class="block-title">Notes</div><div class="pre">{{ doc.notes }}</div></div>{% endif %}
+
+  <div class="footer-note">
+    {% if doc.kind == "invoice" %}This invoice is a request for payment to be made directly to the business. Payments are recorded by the business; no payment is processed through this platform.
+    {% else %}This quotation is an estimate and is not a confirmed payment obligation, an invoice or proof of payment.{% endif %}
+  </div>
+</div>
