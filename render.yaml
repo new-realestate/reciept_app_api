@@ -55,6 +55,12 @@ services:
       # service at a single instance (it already is: one disk, one in-memory rate limiter).
       - key: SCHEDULER_ENABLED
         value: "true"
+      - key: SUPERADMIN_EMAIL
+        sync: false
+      - key: SUPERADMIN_PASSWORD
+        sync: false
+      - key: SUPERADMIN_NAME
+        value: Platform Admin
       - key: SEED_DEFAULT_USERS_ENABLED
         sync: false
       - key: SEED_DEFAULT_USERS

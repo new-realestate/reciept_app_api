@@ -6,10 +6,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from app.api import audit, auth, customers, invoices, public_docs, quotations, receipts, reminders, schedules, tenant, webhooks
+from app.api import admin, audit, auth, customers, invoices, public_docs, quotations, receipts, reminders, schedules, tenant, webhooks
 from app.core.config import get_settings
 from app.core.logging import RequestLogMiddleware, setup_logging
-from app.db.seed import seed_default_users
+from app.db.seed import seed_default_users, seed_superadmin
 from app.services import storage
 
 settings = get_settings()
@@ -20,6 +20,7 @@ setup_logging(settings.log_level, settings.log_json)
 async def lifespan(app: FastAPI):
     if settings.seed_default_users_enabled:
         await seed_default_users()
+    await seed_superadmin()
     scheduler = None
     if settings.scheduler_enabled:
         from app.services.scheduler import start_scheduler
@@ -67,6 +68,7 @@ app.include_router(schedules.router)
 app.include_router(reminders.router)
 app.include_router(audit.router)
 app.include_router(public_docs.router)
+app.include_router(admin.router)
 
 
 @app.exception_handler(HTTPException)

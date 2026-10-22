@@ -28,6 +28,8 @@ class AuditLogOut(BaseModel):
     actor_user_id: uuid.UUID | None
     actor_name: str | None  # None for system or customer actions (e.g. a customer accepting a quotation)
     actor_email: str | None
+    # True when a platform super admin did this (directly, or while acting as this business).
+    platform_admin: bool = False
     metadata: dict[str, Any] | None
     created_at: datetime
 
@@ -76,7 +78,7 @@ async def list_audit_logs(
     total = (await db.execute(select(func.count()).select_from(AuditLog).where(*conds))).scalar_one()
     rows = (
         await db.execute(
-            select(AuditLog, User.full_name, User.email)
+            select(AuditLog, User.full_name, User.email, User.is_superadmin)
             .outerjoin(User, User.id == AuditLog.actor_user_id)
             .where(*conds)
             .order_by(AuditLog.created_at.desc(), AuditLog.id)
@@ -88,9 +90,10 @@ async def list_audit_logs(
         AuditLogOut(
             id=log.id, action=log.action, entity_type=log.entity_type, entity_id=log.entity_id,
             actor_user_id=log.actor_user_id, actor_name=name, actor_email=str(email) if email else None,
+            platform_admin=bool(is_superadmin) or bool((log.metadata_ or {}).get("platform_admin")),
             metadata=log.metadata_, created_at=log.created_at,
         )
-        for log, name, email in rows
+        for log, name, email, is_superadmin in rows
     ]
     return Page[AuditLogOut](items=items, total=total, limit=limit, offset=offset)
 

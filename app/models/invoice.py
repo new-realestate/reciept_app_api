@@ -87,7 +87,7 @@ class Invoice(Base):
     # a customer received never changes afterwards.
     snapshot: Mapped[dict | None] = mapped_column(JSONBType())
 
-    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id"))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_reason: Mapped[str | None] = mapped_column(Text)
@@ -143,5 +143,5 @@ class InvoicePayment(Base):
     method: Mapped[str] = mapped_column(String(32), nullable=False)
     reference: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
-    recorded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id"))
+    recorded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

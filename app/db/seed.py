@@ -65,3 +65,44 @@ async def seed_default_users() -> None:
         except ProgrammingError:
             logger.warning("Users table missing; run `alembic upgrade head` before seeding")
             return
+
+
+async def seed_superadmin() -> None:
+    """Idempotently create the platform super admin from SUPERADMIN_EMAIL/SUPERADMIN_PASSWORD.
+
+    An existing account with that email is never modified (so its password can be
+    changed later without the env var resetting it); a business user with that
+    email is not promoted.
+    """
+    settings = get_settings()
+    email = settings.superadmin_email.strip()
+    if not email:
+        return
+    if not settings.superadmin_password:
+        logger.error("SUPERADMIN_EMAIL is set but SUPERADMIN_PASSWORD is empty; skipping super admin seeding")
+        return
+
+    try:
+        async with AsyncSessionLocal() as session:
+            existing = await session.scalar(select(User).where(User.email == email))
+            if existing is not None:
+                if not existing.is_superadmin:
+                    logger.error("SUPERADMIN_EMAIL %s belongs to a business user; not promoting it", email)
+                return
+            session.add(
+                User(
+                    tenant_id=None,
+                    full_name=settings.superadmin_name or email,
+                    email=email,
+                    password_hash=hash_password(settings.superadmin_password),
+                    role=UserRole.owner,
+                    is_superadmin=True,
+                    is_verified=True,
+                )
+            )
+            await session.commit()
+            logger.info("Seeded platform super admin %s", email)
+    except IntegrityError:
+        logger.info("Super admin %s was created concurrently; skipping", email)
+    except ProgrammingError:
+        logger.warning("Users table missing; run `alembic upgrade head` before seeding")

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -21,7 +21,8 @@ from app.schemas.auth import (
     TokenResponse,
     VerifyRequest,
 )
-from app.services.email import send_password_reset_email, send_verification_email
+from app.services.auth import start_password_reset
+from app.services.email import send_verification_email
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +86,30 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if user.suspended_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been suspended")
+    if not user.is_superadmin:
+        tenant = await db.get(Tenant, user.tenant_id)
+        if tenant is None or tenant.deleted_at is not None or tenant.suspended_at is not None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This business has been suspended")
 
     user.last_login_at = datetime.now(timezone.utc)
     await record_audit_event(
-        db, tenant_id=user.tenant_id, actor_user_id=user.id, action="user.login", entity_type="user", entity_id=user.id
+        db,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        action="platform.login" if user.is_superadmin else "user.login",
+        entity_type="user",
+        entity_id=user.id,
     )
     await db.commit()
 
-    token = create_access_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role.value)
+    token = create_access_token(
+        subject=str(user.id),
+        tenant_id=str(user.tenant_id) if user.tenant_id else None,
+        role=user.role.value,
+        superadmin=user.is_superadmin,
+    )
     return TokenResponse(access_token=token)
 
 
@@ -104,17 +121,7 @@ async def request_password_reset(payload: PasswordResetRequest, db: AsyncSession
     # Always return 200 regardless of whether the email exists, to avoid
     # leaking which addresses are registered.
     if user is not None:
-        reset_token = generate_token()
-        user.password_reset_token = reset_token
-        user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        await db.commit()
-
-        settings = get_settings()
-        reset_url = f"{settings.app_base_url}/auth/password-reset/confirm?token={reset_token}"
-        try:
-            send_password_reset_email(to_email=user.email, reset_url=reset_url)
-        except Exception:
-            logger.exception("Failed to send password reset email to %s", user.email)
+        await start_password_reset(db, user)
 
     return {"detail": "If that email is registered, a reset link has been sent"}
 

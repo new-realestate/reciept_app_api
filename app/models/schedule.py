@@ -40,7 +40,7 @@ class PaymentSchedule(Base):
     # Default false: occurrences are only expectations + reminders.
     auto_invoice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id"))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

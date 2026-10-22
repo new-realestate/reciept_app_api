@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -14,10 +14,15 @@ user_role_enum = PortableEnum(UserRole, name="user_role")
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # Platform super admins belong to no business; everyone else belongs to exactly one.
+        CheckConstraint("tenant_id IS NOT NULL OR is_superadmin", name="chk_users_tenant_or_superadmin"),
+        Index("uq_users_email", "email", unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
     )
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(CIText(), nullable=False)
@@ -25,6 +30,9 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(user_role_enum, nullable=False, default=UserRole.owner)
     signature_image_url: Mapped[str | None] = mapped_column(Text)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_superadmin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suspended_reason: Mapped[str | None] = mapped_column(Text)
     email_verification_token: Mapped[str | None] = mapped_column(Text)
     password_reset_token: Mapped[str | None] = mapped_column(Text)
     password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
