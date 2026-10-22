@@ -205,3 +205,18 @@ async def test_receipt_template_selection_changes_layout_and_rejects_unknown(cli
     await client.patch("/tenant/me", json={"receipt_template": "classic"}, headers=headers)
     view = await client.get(f"/r/{created.json()['hosted_view_token']}")
     assert "Amount received" not in view.text and "Payment Receipt" in view.text
+
+
+async def test_receipt_detail_includes_sharing_details(client, monkeypatch):
+    headers = await _signup_and_login(client, monkeypatch)
+    customer_id = await _create_customer(client, headers)
+    created = await client.post(
+        "/receipts",
+        json={"customer_id": customer_id, "amount_cents": 150000, "currency": "UGX", "reason": "Rent",
+              "payment_method": "cash", "paid_at": "2026-07-01"},
+        headers=headers,
+    )
+    detail = (await client.get(f"/receipts/{created.json()['id']}", headers=headers)).json()
+    assert detail["customer_name"] == "John Payer"
+    assert detail["customer_phone"] == "+256701234567"
+    assert detail["business_name"] == "Acme Rentals"

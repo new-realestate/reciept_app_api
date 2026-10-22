@@ -72,6 +72,10 @@ class ReceiptOut(BaseModel):
 
 class ReceiptDetailOut(ReceiptOut):
     delivery_attempts: list[DeliveryAttemptOut] = []
+    # For sharing from the portal (e.g. a WhatsApp click-to-chat link).
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    business_name: str | None = None
 
 
 class SendReceiptRequest(BaseModel):
