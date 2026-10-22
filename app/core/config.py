@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -7,18 +8,38 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Neon: DATABASE_URL is the pooled (PgBouncer) endpoint used by the app;
+    # DATABASE_URL_UNPOOLED is the direct endpoint, used for Alembic migrations.
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/receipt_app"
+    database_url_unpooled: str = ""
 
-    @field_validator("database_url")
+    @field_validator("database_url", "database_url_unpooled")
     @classmethod
     def _use_asyncpg_driver(cls, v: str) -> str:
-        # Managed Postgres providers (e.g. Render) hand out postgres:// or
+        # Managed Postgres providers (e.g. Neon) hand out postgres:// or
         # postgresql:// URLs; SQLAlchemy's async engine needs the asyncpg driver.
         if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://"):]
-        if v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://"):]
-        return v
+            v = "postgresql+asyncpg://" + v[len("postgres://"):]
+        elif v.startswith("postgresql://"):
+            v = "postgresql+asyncpg://" + v[len("postgresql://"):]
+        if not v.startswith("postgresql+asyncpg://"):
+            return v
+        # asyncpg rejects libpq's sslmode/channel_binding params; it takes ssl= instead.
+        parts = urlsplit(v)
+        query = parse_qsl(parts.query)
+        sslmode = next((value for key, value in query if key == "sslmode"), None)
+        query = [(key, value) for key, value in query if key not in ("sslmode", "channel_binding")]
+        if sslmode and not any(key == "ssl" for key, _ in query):
+            query.append(("ssl", sslmode))
+        return urlunsplit(parts._replace(query=urlencode(query)))
+
+    @property
+    def migration_database_url(self) -> str:
+        return self.database_url_unpooled or self.database_url
+
+    @property
+    def database_is_pooled(self) -> bool:
+        return "-pooler." in self.database_url
 
     jwt_secret: str
     jwt_algorithm: str = "HS256"
@@ -36,6 +57,17 @@ class Settings(BaseSettings):
 
     app_base_url: str = "http://localhost:8000"
     storage_dir: str = "./static"
+
+    # Where uploads and generated PDFs live: "local" (storage_dir on disk) or "s3"
+    # (Neon Object Storage; credentials, endpoint and region come from the standard
+    # AWS_* env vars that `neon deploy` / `neon env pull` write).
+    storage_backend: str = "local"
+    storage_bucket: str = "uploads"
+    # Read here (not only by boto3 from os.environ) so values in .env work too.
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_endpoint_url_s3: str = ""
+    aws_region: str = ""
 
     # Comma-separated list of allowed browser origins for the frontend portal,
     # e.g. "http://localhost:5173,https://portal.example.com".
