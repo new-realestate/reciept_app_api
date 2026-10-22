@@ -8,7 +8,7 @@ from app.models.audit import AuditLog
 async def record_audit_event(
     db: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
     actor_user_id: uuid.UUID | None,
     action: str,
     entity_type: str,

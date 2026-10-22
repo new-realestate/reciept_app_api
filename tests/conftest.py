@@ -95,6 +95,24 @@ async def signup(client, monkeypatch):
 
 
 @pytest_asyncio.fixture
+async def superadmin(client, db_session):
+    """A platform super admin (no business); returns their auth headers."""
+    from app.core.security import hash_password
+    from app.models.user import User
+
+    db_session.add(
+        User(
+            tenant_id=None, full_name="Platform Admin", email="root@example.com",
+            password_hash=hash_password("rootsecret"), is_superadmin=True, is_verified=True,
+        )
+    )
+    await db_session.commit()
+    login = await client.post("/auth/login", json={"email": "root@example.com", "password": "rootsecret"})
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+@pytest_asyncio.fixture
 async def make_invoice(client):
     """Factory: creates (and by default issues) an invoice; returns its JSON."""
     from datetime import date, timedelta

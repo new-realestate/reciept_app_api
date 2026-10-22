@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     seed_default_users_enabled: bool = False
     seed_default_users: str = ""
 
+    # Platform super admin, created on startup when SUPERADMIN_EMAIL is set (never
+    # overwrites an existing account's password). See app/db/seed.py.
+    superadmin_email: str = ""
+    superadmin_password: str = ""
+    superadmin_name: str = "Platform Admin"
+    # Lifetime of the token a super admin gets when acting as a business.
+    impersonation_token_minutes: int = 60
+
     # Application logging (see app/core/logging.py). LOG_JSON=true emits one JSON object per line.
     log_level: str = "INFO"
     log_json: bool = False

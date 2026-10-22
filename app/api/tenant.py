@@ -38,18 +38,14 @@ async def _save_image(upload: UploadFile, subdir: str, stem: str) -> str:
 
     settings = get_settings()
     ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[upload.content_type]
-    target_dir = Path(settings.storage_dir) / subdir
-    target_dir.mkdir(parents=True, exist_ok=True)
     # A fresh filename per upload so the URL changes and browsers don't keep
     # showing the previously cached image after a replace.
-    filename = f"{stem}-{uuid.uuid4().hex[:8]}.{ext}"
-    (target_dir / filename).write_bytes(contents)
-    # Remove earlier uploads for this owner (old and new naming schemes).
-    for old in target_dir.glob(f"{stem}[.-]*"):
-        if old.name != filename:
-            old.unlink(missing_ok=True)
+    key = f"{subdir}/{stem}-{uuid.uuid4().hex[:8]}.{ext}"
+    await asyncio.to_thread(storage.put, key, contents, upload.content_type)
+    # Remove earlier uploads for this owner (stem is the owner's UUID).
+    await asyncio.to_thread(storage.delete_prefix, f"{subdir}/{stem}", keep=key)
 
-    return f"{settings.app_base_url}/static/{subdir}/{filename}"
+    return f"{settings.app_base_url}/static/{key}"
 
 
 @router.get("/tenant/me", response_model=TenantOut)

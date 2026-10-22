@@ -20,7 +20,7 @@ class ApiKey(Base):
     key_hash: Mapped[str] = mapped_column(Text, nullable=False)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id"))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

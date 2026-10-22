@@ -369,3 +369,35 @@ CREATE TABLE notification_attempts (
     provider VARCHAR(16), provider_message_id TEXT, response JSONB,
     attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Migration 0004: platform super admin.
+-- Mirrors app/db/migrations/versions/0004_platform_admin.py.
+-- Super admins have no business (tenant_id NULL); suspension blocks login and API use.
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ALTER COLUMN tenant_id DROP NOT NULL;
+ALTER TABLE users ADD COLUMN is_superadmin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN suspended_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN suspended_reason TEXT;
+ALTER TABLE users ADD CONSTRAINT chk_users_tenant_or_superadmin CHECK (tenant_id IS NOT NULL OR is_superadmin);
+CREATE UNIQUE INDEX uq_users_email ON users(email);
+
+ALTER TABLE tenants ADD COLUMN suspended_at TIMESTAMPTZ;
+ALTER TABLE tenants ADD COLUMN suspended_reason TEXT;
+
+ALTER TABLE audit_logs ALTER COLUMN tenant_id DROP NOT NULL;  -- NULL = platform-level event
+CREATE INDEX idx_audit_created ON audit_logs(created_at DESC);
+
+-- Deleting a user keeps the rows they touched.
+ALTER TABLE audit_logs DROP CONSTRAINT audit_logs_actor_user_id_fkey,
+    ADD CONSTRAINT audit_logs_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE api_keys DROP CONSTRAINT api_keys_created_by_user_id_fkey,
+    ADD CONSTRAINT api_keys_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE invoices DROP CONSTRAINT invoices_created_by_user_id_fkey,
+    ADD CONSTRAINT invoices_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE invoice_payments DROP CONSTRAINT invoice_payments_recorded_by_user_id_fkey,
+    ADD CONSTRAINT invoice_payments_recorded_by_user_id_fkey FOREIGN KEY (recorded_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE quotations DROP CONSTRAINT quotations_created_by_user_id_fkey,
+    ADD CONSTRAINT quotations_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE payment_schedules DROP CONSTRAINT payment_schedules_created_by_user_id_fkey,
+    ADD CONSTRAINT payment_schedules_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;

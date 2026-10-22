@@ -13,10 +13,11 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUIDType(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    # NULL for platform-level events (e.g. a super admin logging in) that belong to no business.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUIDType(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
     )
-    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id"))
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     action: Mapped[str] = mapped_column(Text, nullable=False)
     entity_type: Mapped[str] = mapped_column(Text, nullable=False)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType())
