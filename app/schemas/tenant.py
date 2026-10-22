@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.models.enums import UserRole
+
 ReceiptTemplateName = Literal["classic", "modern"]
 
 
@@ -59,3 +61,13 @@ class LogoUploadResponse(BaseModel):
 
 class SignatureUploadResponse(BaseModel):
     signature_image_url: str
+
+
+class MeOut(BaseModel):
+    """The signed-in user, including the signature printed on receipts they issue."""
+
+    id: uuid.UUID
+    full_name: str
+    email: str
+    role: UserRole
+    signature_image_url: str | None
