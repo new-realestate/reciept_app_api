@@ -168,6 +168,11 @@ async def get_receipt(
 
     detail = ReceiptDetailOut.model_validate(receipt)
     detail.delivery_attempts = [DeliveryAttemptOut.model_validate(a) for a in attempts]
+    customer = await db.get(Customer, receipt.customer_id)
+    tenant = await db.get(Tenant, receipt.tenant_id)
+    detail.customer_name = customer.name if customer else None
+    detail.customer_phone = customer.phone if customer else None
+    detail.business_name = tenant.business_name if tenant else None
     return detail
 
 
