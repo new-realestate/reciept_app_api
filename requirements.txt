@@ -20,4 +20,3 @@ pytest-asyncio>=0.24
 aiosqlite>=0.20
 tzdata>=2024.1
 apscheduler>=3.10,<4
-boto3>=1.35

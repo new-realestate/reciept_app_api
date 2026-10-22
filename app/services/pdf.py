@@ -24,11 +24,11 @@ def format_money(amount_cents: int, currency: str) -> str:
 
 
 def _local_file_uri(url: str | None) -> str | None:
-    """Map one of our own /static upload URLs to an inline data: URI.
+    """Map one of our own /static upload URLs to a file:// URI.
 
     WeasyPrint fetches images synchronously while the API worker is busy
     generating the PDF, so fetching our own URL over HTTP can't be answered
-    and the image is silently dropped. Reading straight from storage avoids that.
+    and the image is silently dropped. Reading from disk avoids that.
     """
     if not url:
         return None
@@ -36,12 +36,10 @@ def _local_file_uri(url: str | None) -> str | None:
     prefix = f"{settings.app_base_url.rstrip('/')}/static/"
     if not url.startswith(prefix):
         return None
-    key = url[len(prefix):]
-    data = storage.get(key)
-    if data is None:
+    path = (Path(settings.storage_dir) / url[len(prefix):]).resolve()
+    if not path.is_file() or Path(settings.storage_dir).resolve() not in path.parents:
         return None
-    content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
-    return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+    return path.as_uri()
 
 
 RECEIPT_TEMPLATES = {

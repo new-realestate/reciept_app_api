@@ -35,6 +35,8 @@ services:
         sync: false
       - key: CORS_ALLOW_ORIGINS_RAW
         sync: false
+      - key: STORAGE_DIR
+        value: /app/static
       - key: GMAIL_CLIENT_ID
         sync: false
       - key: GMAIL_CLIENT_SECRET
@@ -50,7 +52,7 @@ services:
       - key: TWILIO_FROM_NUMBER
         sync: false
       # Reminders, schedule occurrences and quotation expiry run in-process; keep this
-      # service at a single instance (it already is: one in-memory rate limiter).
+      # service at a single instance (it already is: one disk, one in-memory rate limiter).
       - key: SCHEDULER_ENABLED
         value: "true"
       - key: SEED_DEFAULT_USERS_ENABLED
