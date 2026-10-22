@@ -1,8 +1,3 @@
-databases:
-  - name: receipt-app-db
-    plan: free
-    postgresMajorVersion: "17"
-
 services:
   - type: web
     name: receipt-app
@@ -11,15 +6,25 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     preDeployCommand: alembic upgrade head
-    disk:
-      name: receipt-app-storage
-      mountPath: /app/static
-      sizeGB: 1
     envVars:
+      # Postgres and object storage live on Neon (project misty-dew-25464680, branch
+      # production). Copy the values from `neon env pull` / the Neon console.
       - key: DATABASE_URL
-        fromDatabase:
-          name: receipt-app-db
-          property: connectionString
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: STORAGE_BUCKET
+        value: uploads
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_ENDPOINT_URL_S3
+        sync: false
+      - key: AWS_REGION
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_ALGORITHM

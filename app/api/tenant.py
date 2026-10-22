@@ -1,5 +1,5 @@
+import asyncio
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.tenant import LogoUploadResponse, SignatureUploadResponse, TenantOut, TenantUpdate
+from app.services import storage
 
 router = APIRouter(tags=["tenant"])
 

@@ -3,6 +3,8 @@ import os
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("APP_BASE_URL", "http://testserver")
+# Keep tests on local disk even when .env points storage at Neon Object Storage.
+os.environ["STORAGE_BACKEND"] = "local"
 
 
 import pytest

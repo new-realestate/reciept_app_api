@@ -12,3 +12,5 @@ static/pdfs/*
 !static/pdfs/.gitkeep
 .pytest_cache/
 *.egg-info/
+.neon
+node_modules/

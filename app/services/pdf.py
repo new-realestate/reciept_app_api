@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import mimetypes
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
 from app.core.config import get_settings
+from app.services import storage
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
@@ -85,25 +88,15 @@ def render_document_pdf_bytes(view: dict) -> bytes:
 
 
 def read_stored_pdf(*, tenant_id: str, receipt_id: str) -> bytes | None:
-    settings = get_settings()
-    file_path = Path(settings.storage_dir) / "pdfs" / tenant_id / f"{receipt_id}.pdf"
-    if file_path.exists():
-        return file_path.read_bytes()
-    return None
+    return storage.get(f"pdfs/{tenant_id}/{receipt_id}.pdf")
 
 
 def store_receipt_pdf(*, tenant_id: str, receipt_id: str, pdf_bytes: bytes) -> str:
-    """Stores the PDF on local disk (MVP) and returns a public URL path.
+    """Stores the PDF (see app/services/storage.py) and returns its public URL.
 
-    Swap this function's body for an S3/GCS upload later without changing
-    callers — they only depend on getting back a URL.
+    Callers only depend on getting back a URL.
     """
     settings = get_settings()
-    pdf_dir = Path(settings.storage_dir) / "pdfs" / tenant_id
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-
-    filename = f"{receipt_id}.pdf"
-    file_path = pdf_dir / filename
-    file_path.write_bytes(pdf_bytes)
-
-    return f"{settings.app_base_url}/static/pdfs/{tenant_id}/{filename}"
+    key = f"pdfs/{tenant_id}/{receipt_id}.pdf"
+    storage.put(key, pdf_bytes, "application/pdf")
+    return f"{settings.app_base_url}/static/{key}"
