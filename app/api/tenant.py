@@ -11,7 +11,7 @@ from app.core.deps import CurrentUser, get_current_user
 from app.db.session import get_db
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.schemas.tenant import LogoUploadResponse, SignatureUploadResponse, TenantOut, TenantUpdate
+from app.schemas.tenant import LogoUploadResponse, MeOut, SignatureUploadResponse, TenantOut, TenantUpdate
 from app.services import storage
 
 router = APIRouter(tags=["tenant"])
@@ -28,7 +28,7 @@ async def _get_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> Tenant:
     return tenant
 
 
-async def _save_image(upload: UploadFile, subdir: str, stem: str) -> str:
+async def _save_image(upload: UploadFile, subdir: str, stem: str, *, remove_previous: bool = True) -> str:
     if upload.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported image type")
 
@@ -42,8 +42,9 @@ async def _save_image(upload: UploadFile, subdir: str, stem: str) -> str:
     # showing the previously cached image after a replace.
     key = f"{subdir}/{stem}-{uuid.uuid4().hex[:8]}.{ext}"
     await asyncio.to_thread(storage.put, key, contents, upload.content_type)
-    # Remove earlier uploads for this owner (stem is the owner's UUID).
-    await asyncio.to_thread(storage.delete_prefix, f"{subdir}/{stem}", keep=key)
+    if remove_previous:
+        # Remove earlier uploads for this owner (stem is the owner's UUID).
+        await asyncio.to_thread(storage.delete_prefix, f"{subdir}/{stem}", keep=key)
 
     return f"{settings.app_base_url}/static/{key}"
 
@@ -100,7 +101,38 @@ async def upload_signature(
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one()
 
-    signature_url = await _save_image(file, "signatures", str(user.id))
+    # Earlier signature files are kept: receipts already issued link to the one they were issued with.
+    signature_url = await _save_image(file, "signatures", str(user.id), remove_previous=False)
     user.signature_image_url = signature_url
     await db.commit()
     return SignatureUploadResponse(signature_image_url=signature_url)
+
+
+@router.get("/users/me", response_model=MeOut)
+async def get_me(current_user: CurrentUser = Depends(get_current_user)):
+    user = current_user.user
+    return MeOut(
+        id=user.id, full_name=user.full_name, email=str(user.email), role=user.role,
+        signature_image_url=user.signature_image_url,
+    )
+
+
+@router.delete("/users/me/signature", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_signature(current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Stop printing a signature on new receipts.
+
+    The image file is kept because receipts already issued still link to it.
+    """
+    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    if user.signature_image_url is None:
+        return
+    user.signature_image_url = None
+    await record_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        actor_user_id=user.id,
+        action="user.signature_removed",
+        entity_type="user",
+        entity_id=user.id,
+    )
+    await db.commit()
