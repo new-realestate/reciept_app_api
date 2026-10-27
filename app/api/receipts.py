@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import (
@@ -21,6 +21,7 @@ from app.core.access import (
 from app.core.audit import record_audit_event
 from app.core.config import get_settings
 from app.core.rate_limit import receipt_create_rate_limiter
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.delivery import DeliveryAttempt
@@ -59,8 +60,8 @@ async def create_receipt(
     current_user: AccessScope = Depends(require_perm(Perm.receipts_issue)),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
-    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
+    user = await db.get_one(User, current_user.id)
 
     # A repeated idempotency key returns the receipt already issued instead of a duplicate.
     key = idempotency_key or payload.idempotency_key
@@ -152,11 +153,9 @@ async def list_receipts(
         stmt = stmt.where(Receipt.status == status_filter)
 
     # Still a plain array (existing clients unchanged); the full match count is in X-Total-Count.
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows, total = await paginate(db, stmt.order_by(Receipt.created_at.desc(), Receipt.id), limit=limit, offset=offset)
     response.headers["X-Total-Count"] = str(total)
-    stmt = stmt.order_by(Receipt.created_at.desc(), Receipt.id).limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    return rows
 
 
 @router.get("/{receipt_id}", response_model=ReceiptDetailOut)
@@ -295,7 +294,7 @@ async def _load_receipt_with_customer(db: AsyncSession, receipt_id: uuid.UUID, s
     result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.tenant_id == tenant_id))
     receipt = ensure_document_visible(scope, result.scalar_one_or_none(), "Receipt")
 
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, tenant_id)
     customer = (await db.execute(select(Customer).where(Customer.id == receipt.customer_id))).scalar_one()
     return receipt, tenant, customer
 
@@ -389,7 +388,7 @@ async def hosted_receipt_view(hosted_view_token: str, db: AsyncSession = Depends
     if receipt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found")
 
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == receipt.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, receipt.tenant_id)
     customer = (await db.execute(select(Customer).where(Customer.id == receipt.customer_id))).scalar_one()
     user = (await db.execute(select(User).where(User.id == receipt.issued_by_user_id))).scalar_one_or_none()
 

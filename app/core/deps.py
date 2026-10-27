@@ -29,8 +29,12 @@ class CurrentUser:
         tenant_id: uuid.UUID | None = None,
         role: UserRole | None = None,
         impersonator_id: uuid.UUID | None = None,
+        tenant: Tenant | None = None,
     ):
         self.user = user
+        # The business, loaded once per request. Holding it here also keeps it in the
+        # session's identity map, so db.get(Tenant, ...) elsewhere in the request is free.
+        self.tenant = tenant
         self.id: uuid.UUID = user.id
         self.tenant_id: uuid.UUID = tenant_id or user.tenant_id  # type: ignore[assignment]
         self.role = role or user.role
@@ -50,8 +54,16 @@ async def load_token_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
+    # The user's business comes in the same query; later db.get(Tenant, ...) calls in the
+    # request reuse it instead of going back to the database.
+    row = (
+        await db.execute(
+            select(User, Tenant).outerjoin(Tenant, Tenant.id == User.tenant_id).where(User.id == uuid.UUID(user_id))
+        )
+    ).first()
+    user = row[0] if row else None
+    # Keep a reference so the business stays in the identity map for the rest of the request.
+    db.info["auth_tenant"] = row[1] if row else None
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     # 401 rather than 403 so clients drop the session.
@@ -75,10 +87,10 @@ async def get_current_user(
         tenant = await db.get(Tenant, uuid.UUID(act_tenant_id))
         if tenant is None or tenant.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Business not found")
-        return CurrentUser(user, tenant_id=tenant.id, role=UserRole.owner, impersonator_id=user.id)
+        return CurrentUser(user, tenant_id=tenant.id, role=UserRole.owner, impersonator_id=user.id, tenant=tenant)
 
-    tenant = await db.get(Tenant, user.tenant_id)
+    tenant = await db.get(Tenant, user.tenant_id)  # already loaded with the user
     if tenant is None or tenant.deleted_at is not None or tenant.suspended_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Business suspended")
 
-    return CurrentUser(user)
+    return CurrentUser(user, tenant=tenant)

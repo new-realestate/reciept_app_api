@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.invoices import _ctx
@@ -18,6 +18,7 @@ from app.core.access import (
     validate_doc_context,
 )
 from app.core.audit import record_audit_event
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.notification import NotificationEvent
@@ -114,8 +115,7 @@ async def list_quotations(
     if q:
         like = f"%{q}%"
         base = base.where(or_(Quotation.number.ilike(like), Quotation.title.ilike(like), Customer.name.ilike(like)))
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await db.execute(base.order_by(Quotation.created_at.desc(), Quotation.id).limit(limit).offset(offset))).all()
+    rows, total = await paginate(db, base.order_by(Quotation.created_at.desc(), Quotation.id), limit=limit, offset=offset)
     items = [svc.serialize_quotation(row, name, today) for row, name in rows]
     return Page[QuotationOut](items=items, total=total, limit=limit, offset=offset)
 

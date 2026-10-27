@@ -84,6 +84,8 @@ class BusinessBranding(BaseModel):
     name: str
     logo_url: str | None
     brand_color: str | None
+    default_currency: str = "UGX"
+    timezone: str = "Africa/Kampala"
 
 
 class MeOut(BaseModel):

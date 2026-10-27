@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import AccessScope, get_scope, get_scoped_property, require_manager_scope, scope_properties
 from app.core.audit import record_audit_event
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.property import Property, PropertyStaffAssignment, PropertyUnit
@@ -40,24 +41,30 @@ def _role(value) -> str:
 
 
 async def _counts(db: AsyncSession, property_ids: list[uuid.UUID]) -> tuple[dict, dict, dict]:
+    """Unit, occupied-unit and active-tenancy counts per property, in one query."""
     if not property_ids:
         return {}, {}, {}
-    units = dict((await db.execute(
-        select(PropertyUnit.property_id, func.count()).where(
-            PropertyUnit.property_id.in_(property_ids), PropertyUnit.status != "archived"
-        ).group_by(PropertyUnit.property_id)
-    )).all())
-    occupied = dict((await db.execute(
-        select(Tenancy.property_id, func.count(func.distinct(Tenancy.unit_id))).where(
-            Tenancy.property_id.in_(property_ids), Tenancy.status == "active", Tenancy.unit_id.is_not(None)
-        ).group_by(Tenancy.property_id)
-    )).all())
-    tenancies = dict((await db.execute(
-        select(Tenancy.property_id, func.count()).where(
-            Tenancy.property_id.in_(property_ids), Tenancy.status == "active"
-        ).group_by(Tenancy.property_id)
-    )).all())
-    return units, occupied, tenancies
+    units = (
+        select(func.count()).select_from(PropertyUnit)
+        .where(PropertyUnit.property_id == Property.id, PropertyUnit.status != "archived")
+        .correlate(Property).scalar_subquery()
+    )
+    occupied = (
+        select(func.count(func.distinct(Tenancy.unit_id)))
+        .where(Tenancy.property_id == Property.id, Tenancy.status == "active", Tenancy.unit_id.is_not(None))
+        .correlate(Property).scalar_subquery()
+    )
+    active = (
+        select(func.count()).select_from(Tenancy)
+        .where(Tenancy.property_id == Property.id, Tenancy.status == "active")
+        .correlate(Property).scalar_subquery()
+    )
+    rows = (await db.execute(select(Property.id, units, occupied, active).where(Property.id.in_(property_ids)))).all()
+    return (
+        {pid: u for pid, u, _, _ in rows},
+        {pid: o for pid, _, o, _ in rows},
+        {pid: a for pid, _, _, a in rows},
+    )
 
 
 async def _out(db: AsyncSession, props: list[Property]) -> list[PropertyOut]:
@@ -148,10 +155,9 @@ async def list_properties(
                 PropertyStaffAssignment.user_id == assigned_to, PropertyStaffAssignment.revoked_at.is_(None)
             )
         ))
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows, total = await paginate(db, stmt.order_by(Property.name, Property.id), limit=limit, offset=offset)
     response.headers["X-Total-Count"] = str(total)
-    rows = (await db.execute(stmt.order_by(Property.name, Property.id).limit(limit).offset(offset))).scalars().all()
-    return await _out(db, list(rows))
+    return await _out(db, rows)
 
 
 @router.get("/{property_id}", response_model=PropertyDetailOut)

@@ -2,7 +2,6 @@ import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import AccessScope, get_scope, require_manager_scope
@@ -22,8 +21,7 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 async def _get_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> Tenant:
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    tenant = await db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     return tenant
@@ -101,8 +99,7 @@ async def upload_signature(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.id == current_user.id))
-    user = result.scalar_one()
+    user = await db.get_one(User, current_user.id)
 
     # Earlier signature files are kept: receipts already issued link to the one they were issued with.
     signature_url = await _save_image(file, "signatures", str(user.id), remove_previous=False)
@@ -122,7 +119,8 @@ async def get_me(current_user: AccessScope = Depends(get_scope), db: AsyncSessio
         permissions=sorted(current_user.perms), is_manager=current_user.is_manager,
         assigned_property_ids=sorted(current_user.property_ids, key=str),
         business=BusinessBranding(
-            id=tenant.id, name=tenant.business_name, logo_url=tenant.logo_url, brand_color=tenant.brand_color
+            id=tenant.id, name=tenant.business_name, logo_url=tenant.logo_url, brand_color=tenant.brand_color,
+            default_currency=tenant.default_currency, timezone=tenant.timezone,
         ) if tenant else None,
     )
 
@@ -133,7 +131,7 @@ async def delete_signature(current_user: CurrentUser = Depends(get_current_user)
 
     The image file is kept because receipts already issued still link to it.
     """
-    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    user = await db.get_one(User, current_user.id)
     if user.signature_image_url is None:
         return
     user.signature_image_url = None

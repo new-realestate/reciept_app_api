@@ -7,13 +7,15 @@ on a property assigned to them; new tenancies must be on such a property.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import AccessScope, Perm, get_scoped_property, require_perm
 from app.core.audit import record_audit_event
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
+from app.models.kyc import KycProfile
 from app.models.property import Property, PropertyUnit
 from app.models.renter import Renter, Tenancy
 from app.models.schedule import PaymentSchedule
@@ -37,51 +39,69 @@ router = APIRouter(tags=["renters"])
 MANAGE = require_perm(Perm.renters_manage)
 
 
+def _schedule_id():
+    """The tenancy's rent schedule (oldest, if several), as a correlated subquery."""
+    return (
+        select(PaymentSchedule.id).where(PaymentSchedule.tenancy_id == Tenancy.id)
+        .order_by(PaymentSchedule.created_at).limit(1).correlate(Tenancy).scalar_subquery()
+    )
+
+
+async def _tenancy_rows(db: AsyncSession, *conds) -> list[tuple[Tenancy, TenancyOut]]:
+    """Tenancies with their property name, unit label and rent schedule, in one query."""
+    rows = await db.execute(
+        select(Tenancy, Property.name, PropertyUnit.label, _schedule_id())
+        .join(Property, Property.id == Tenancy.property_id)
+        .outerjoin(PropertyUnit, PropertyUnit.id == Tenancy.unit_id)
+        .where(*conds)
+        .order_by(Tenancy.start_date.desc(), Tenancy.id)
+    )
+    out = []
+    for tenancy, property_name, unit_label, schedule_id in rows.all():
+        item = TenancyOut.model_validate(tenancy)
+        item.property_name, item.unit_label, item.payment_schedule_id = property_name, unit_label, schedule_id
+        out.append((tenancy, item))
+    return out
+
+
 async def _tenancy_outs(db: AsyncSession, tenancies: list[Tenancy]) -> list[TenancyOut]:
     if not tenancies:
         return []
-    prop_names = dict((await db.execute(
-        select(Property.id, Property.name).where(Property.id.in_({t.property_id for t in tenancies}))
-    )).all())
-    unit_ids = {t.unit_id for t in tenancies if t.unit_id}
-    unit_labels = (
-        dict((await db.execute(select(PropertyUnit.id, PropertyUnit.label).where(PropertyUnit.id.in_(unit_ids)))).all())
-        if unit_ids else {}
-    )
-    schedules = dict((await db.execute(
-        select(PaymentSchedule.tenancy_id, PaymentSchedule.id).where(PaymentSchedule.tenancy_id.in_([t.id for t in tenancies]))
-        .order_by(PaymentSchedule.created_at)
-    )).all())
-    out = []
-    for t in tenancies:
-        item = TenancyOut.model_validate(t)
-        item.property_name = prop_names.get(t.property_id)
-        item.unit_label = unit_labels.get(t.unit_id) if t.unit_id else None
-        item.payment_schedule_id = schedules.get(t.id)
-        out.append(item)
-    return out
+    by_id = {t.id: item for t, item in await _tenancy_rows(db, Tenancy.id.in_([t.id for t in tenancies]))}
+    return [by_id[t.id] for t in tenancies]
 
 
 async def _renter_outs(db: AsyncSession, scope: AccessScope, renters: list[Renter], *, detail: bool = False):
     if not renters:
         return []
-    customers = {c.id: c for c in (await db.execute(select(Customer).where(Customer.id.in_([r.customer_id for r in renters])))).scalars()}
-    tenancy_stmt = select(Tenancy).where(Tenancy.renter_id.in_([r.id for r in renters])).order_by(Tenancy.start_date.desc())
+    renter_ids = [r.id for r in renters]
+    # Customer and KYC profile for every renter in one query, tenancies in a second.
+    people = {
+        renter_id: (customer, kyc)
+        for renter_id, customer, kyc in (
+            await db.execute(
+                select(Renter.id, Customer, KycProfile)
+                .join(Customer, Customer.id == Renter.customer_id)
+                .outerjoin(KycProfile, KycProfile.renter_id == Renter.id)
+                .where(Renter.id.in_(renter_ids))
+            )
+        ).all()
+    }
+    conds = [Tenancy.renter_id.in_(renter_ids)]
     if not scope.is_manager:
         # Staff see only the tenancies on their assigned properties.
-        tenancy_stmt = tenancy_stmt.where(Tenancy.property_id.in_(scope.property_ids or [uuid.UUID(int=0)]))
-    tenancies = list((await db.execute(tenancy_stmt)).scalars().all())
-    tenancy_out = {t.id: o for t, o in zip(tenancies, await _tenancy_outs(db, tenancies))}
-    kyc = await kyc_svc.statuses_for_renters(db, [r.id for r in renters])
+        conds.append(Tenancy.property_id.in_(scope.property_ids or [uuid.UUID(int=0)]))
+    tenancies = await _tenancy_rows(db, *conds)
 
     out = []
     for r in renters:
-        mine = [tenancy_out[t.id] for t in tenancies if t.renter_id == r.id]
-        customer = CustomerOut.model_validate(customers[r.customer_id])
+        customer_row, kyc = people[r.id]
+        mine = [item for t, item in tenancies if t.renter_id == r.id]
+        customer = CustomerOut.model_validate(customer_row)
         customer.renter_id = r.id
         data = dict(
             id=r.id, customer_id=r.customer_id, customer=customer, status=r.status, occupation=r.occupation,
-            employer=r.employer, notes=r.notes, kyc_status=kyc.get(r.id), created_at=r.created_at,
+            employer=r.employer, notes=r.notes, kyc_status=kyc_svc.effective_status(kyc), created_at=r.created_at,
             current_tenancies=[t for t in mine if t.status == "active"],
         )
         out.append(RenterDetailOut(**data, tenancies=mine) if detail else RenterOut(**data))
@@ -120,10 +140,9 @@ async def list_renters(
     if property_id:
         await get_scoped_property(db, current_user, property_id)
         stmt = stmt.where(Renter.id.in_(select(Tenancy.renter_id).where(Tenancy.property_id == property_id)))
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows, total = await paginate(db, stmt.order_by(Customer.name, Renter.id), limit=limit, offset=offset)
     response.headers["X-Total-Count"] = str(total)
-    rows = (await db.execute(stmt.order_by(Customer.name, Renter.id).limit(limit).offset(offset))).scalars().all()
-    return await _renter_outs(db, current_user, list(rows))
+    return await _renter_outs(db, current_user, rows)
 
 
 @router.get("/renters/{renter_id}", response_model=RenterDetailOut)

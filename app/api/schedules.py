@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.invoices import _ctx
@@ -19,6 +19,7 @@ from app.core.access import (
     validate_doc_context,
 )
 from app.core.audit import record_audit_event
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -59,14 +60,23 @@ async def _occurrence_outs(db: AsyncSession, occs: list[ScheduleOccurrence], tod
     return out
 
 
-async def _schedule_out(db: AsyncSession, s: PaymentSchedule, *, detail: bool = False, today: date | None = None):
-    name = (await db.execute(select(Customer.name).where(Customer.id == s.customer_id))).scalar_one_or_none()
-    nxt = (
-        await db.execute(
-            select(ScheduleOccurrence).where(ScheduleOccurrence.schedule_id == s.id, ScheduleOccurrence.status.in_(("expected", "invoiced")))
-            .order_by(ScheduleOccurrence.due_date).limit(1)
-        )
-    ).scalar_one_or_none()
+_OPEN = ("expected", "invoiced")
+
+
+async def _schedule_out(
+    db: AsyncSession, s: PaymentSchedule, *, detail: bool = False, today: date | None = None, preloaded: tuple | None = None,
+):
+    """`preloaded` = (customer name, next open occurrence) when the caller fetched them in bulk."""
+    if preloaded is not None:
+        name, nxt = preloaded
+    else:
+        name = (await db.execute(select(Customer.name).where(Customer.id == s.customer_id))).scalar_one_or_none()
+        nxt = (
+            await db.execute(
+                select(ScheduleOccurrence).where(ScheduleOccurrence.schedule_id == s.id, ScheduleOccurrence.status.in_(_OPEN))
+                .order_by(ScheduleOccurrence.due_date).limit(1)
+            )
+        ).scalar_one_or_none()
     data: dict[str, Any] = dict(
         id=s.id, customer_id=s.customer_id, customer_name=name, description=s.description, reference_label=s.reference_label,
         amount_cents=s.amount_cents, currency=s.currency, frequency=s.frequency, first_due_date=s.first_due_date,
@@ -136,9 +146,21 @@ async def list_schedules(
     if property_id:
         conds.append(PaymentSchedule.property_id == property_id)
     base = scope_documents(select(PaymentSchedule).where(*conds), PaymentSchedule, current_user)
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await db.execute(base.order_by(PaymentSchedule.created_at.desc()).limit(limit).offset(offset))).scalars().all()
-    return Page[ScheduleOut](items=[await _schedule_out(db, s) for s in rows], total=total, limit=limit, offset=offset)
+    rows, total = await paginate(db, base.order_by(PaymentSchedule.created_at.desc(), PaymentSchedule.id), limit=limit, offset=offset)
+    # Customer names and each schedule's next open payment for the whole page in two queries.
+    ids = [s.id for s in rows]
+    names = dict((await db.execute(
+        select(Customer.id, Customer.name).where(Customer.id.in_({s.customer_id for s in rows}))
+    )).all()) if rows else {}
+    upcoming: dict = {}
+    if ids:
+        for occ in (await db.execute(
+            select(ScheduleOccurrence).where(ScheduleOccurrence.schedule_id.in_(ids), ScheduleOccurrence.status.in_(_OPEN))
+            .order_by(ScheduleOccurrence.due_date)
+        )).scalars():
+            upcoming.setdefault(occ.schedule_id, occ)
+    items = [await _schedule_out(db, s, preloaded=(names.get(s.customer_id), upcoming.get(s.id))) for s in rows]
+    return Page[ScheduleOut](items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{schedule_id}", response_model=ScheduleDetailOut)

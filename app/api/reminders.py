@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.api.invoices import _ctx
 from app.core.access import AccessScope, get_scope, require_manager_scope, scope_documents
@@ -168,6 +169,8 @@ async def collect_payments(
         .join(Customer, Customer.id == Invoice.customer_id)
         .outerjoin(ScheduleOccurrence, ScheduleOccurrence.id == Invoice.schedule_occurrence_id)
         .where(Invoice.tenant_id == tenant_id, Invoice.status == "issued", Invoice.total_cents - Invoice.amount_paid_cents > 0)
+        # Only totals and dates are needed here; skip loading every invoice's line items.
+        .options(noload(Invoice.line_items))
     )
     if scope is not None:
         inv_stmt = scope_documents(inv_stmt, Invoice, scope)

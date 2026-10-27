@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import (
@@ -18,6 +18,7 @@ from app.core.access import (
 )
 from app.core.audit import record_audit_event
 from app.core.deps import CurrentUser
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.enums import DeliveryChannel
@@ -70,8 +71,8 @@ class PaymentRecordedOut(BaseModel):
 
 
 async def _ctx(db: AsyncSession, current_user: CurrentUser) -> tuple[Tenant, User]:
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
-    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
+    user = await db.get_one(User, current_user.id)
     return tenant, user
 
 
@@ -135,7 +136,7 @@ async def list_invoices(
     current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
     today = notif.tenant_today(tenant)
 
     conds = [Invoice.tenant_id == tenant.id]
@@ -172,10 +173,7 @@ async def list_invoices(
         like = f"%{q}%"
         base = base.where(or_(Invoice.number.ilike(like), Invoice.title.ilike(like), Customer.name.ilike(like)))
 
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (
-        await db.execute(base.order_by(Invoice.created_at.desc(), Invoice.id).limit(limit).offset(offset))
-    ).all()
+    rows, total = await paginate(db, base.order_by(Invoice.created_at.desc(), Invoice.id), limit=limit, offset=offset)
     items = [svc.serialize_invoice(inv, name, today) for inv, name in rows]
     return Page[InvoiceOut](items=items, total=total, limit=limit, offset=offset)
 

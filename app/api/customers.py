@@ -1,11 +1,12 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access import AccessScope, Perm, require_perm, scope_documents
 from app.core.audit import record_audit_event
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -112,12 +113,9 @@ async def list_customers(
     if is_renter is not None:
         has_renter = select(Renter.id).where(Renter.customer_id == Customer.id).exists()
         stmt = stmt.where(has_renter if is_renter else ~has_renter)
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows, total = await paginate(db, stmt.order_by(Customer.created_at.desc(), Customer.id), limit=limit, offset=offset)
     response.headers["X-Total-Count"] = str(total)
-    stmt = stmt.order_by(Customer.created_at.desc(), Customer.id).limit(limit).offset(offset)
-
-    result = await db.execute(stmt)
-    return await _out(db, list(result.scalars().all()))
+    return await _out(db, rows)
 
 
 @router.get("/{customer_id}", response_model=CustomerOut)
