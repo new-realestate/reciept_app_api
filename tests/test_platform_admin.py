@@ -26,7 +26,7 @@ async def _issue_receipt(client, headers):
     assert customer.status_code == 201, customer.text
     receipt = await client.post(
         "/receipts",
-        json={"customer_id": customer.json()["id"], "amount_cents": 150000, "currency": "UGX", "reason": "Rent",
+        json={"payment_received_confirmed": True, "customer_id": customer.json()["id"], "amount_cents": 150000, "currency": "UGX", "reason": "Rent",
               "payment_method": "cash", "paid_at": "2026-07-01"},
         headers=headers,
     )
@@ -212,3 +212,28 @@ async def test_seed_superadmin_is_idempotent(db_engine, monkeypatch):
     from app.core.security import verify_password
 
     assert verify_password("first-password", admins[0].password_hash)
+
+
+async def test_seed_users_naming_the_same_business_share_it(db_engine, monkeypatch):
+    import json
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    import app.db.seed as seed
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(seed, "AsyncSessionLocal", async_sessionmaker(db_engine, expire_on_commit=False))
+    monkeypatch.setattr(get_settings(), "seed_default_users", json.dumps([
+        {"email": "boss@example.com", "password": "x", "business_name": "Demo Business", "role": "owner"},
+        {"email": "helper@example.com", "password": "x", "business_name": "Demo Business", "role": "staff"},
+        {"email": "other@example.com", "password": "x", "business_name": "Elsewhere", "role": "owner"},
+    ]))
+
+    await seed.seed_default_users()
+    await seed.seed_default_users()  # idempotent
+
+    async with async_sessionmaker(db_engine)() as session:
+        users = {u.email: u for u in (await session.execute(select(User))).scalars()}
+    assert len(users) == 3
+    assert users["boss@example.com"].tenant_id == users["helper@example.com"].tenant_id
+    assert users["other@example.com"].tenant_id != users["boss@example.com"].tenant_id

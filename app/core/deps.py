@@ -45,7 +45,8 @@ async def load_token_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     payload = decode_access_token(credentials.credentials)
-    if payload is None:
+    # Purpose-bound tokens (e.g. KYC document links) carry a "typ" and are never valid for API access.
+    if payload is None or payload.get("typ") is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user_id = payload.get("sub")
@@ -56,6 +57,8 @@ async def load_token_user(
     # 401 rather than 403 so clients drop the session.
     if user.suspended_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account suspended")
+    if user.deactivated_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account deactivated")
     return user, payload
 
 

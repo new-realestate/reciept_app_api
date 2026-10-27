@@ -3,14 +3,23 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import (
+    AccessScope,
+    Perm,
+    document_visible,
+    ensure_document_visible,
+    get_scope,
+    require_perm,
+    scope_documents,
+    validate_doc_context,
+)
 from app.core.audit import record_audit_event
 from app.core.config import get_settings
-from app.core.deps import CurrentUser, get_current_user
 from app.core.rate_limit import receipt_create_rate_limiter
 from app.db.session import get_db
 from app.models.customer import Customer
@@ -21,6 +30,8 @@ from app.models.suppression import Suppression
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.receipt import DeliveryAttemptOut, ReceiptCreate, ReceiptDetailOut, ReceiptOut, SendReceiptRequest
+from app.services import notifications as notif
+from app.services.customers import get_or_create_customer
 from app.services.email import send_receipt_email
 from app.services.pdf import format_money, read_stored_pdf, render_receipt_html
 from app.services.receipts import create_receipt_record
@@ -35,39 +46,6 @@ EMAIL_RETRY_ATTEMPTS = 3
 EMAIL_RETRY_BACKOFF_SECONDS = 1.0
 
 
-async def _get_or_create_customer(db: AsyncSession, tenant_id: uuid.UUID, payload: ReceiptCreate) -> Customer:
-    if payload.customer_id:
-        result = await db.execute(
-            select(Customer).where(Customer.id == payload.customer_id, Customer.tenant_id == tenant_id)
-        )
-        customer = result.scalar_one_or_none()
-        if customer is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
-        return customer
-
-    filters = []
-    if payload.customer_email:
-        filters.append(Customer.email == payload.customer_email)
-    if payload.customer_phone:
-        filters.append(Customer.phone == payload.customer_phone)
-
-    if filters:
-        result = await db.execute(select(Customer).where(Customer.tenant_id == tenant_id, or_(*filters)))
-        existing = result.scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-    customer = Customer(
-        tenant_id=tenant_id,
-        name=payload.customer_name,
-        email=payload.customer_email,
-        phone=payload.customer_phone,
-    )
-    db.add(customer)
-    await db.flush()
-    return customer
-
-
 @router.post(
     "",
     response_model=ReceiptOut,
@@ -76,11 +54,27 @@ async def _get_or_create_customer(db: AsyncSession, tenant_id: uuid.UUID, payloa
 )
 async def create_receipt(
     payload: ReceiptCreate,
-    current_user: CurrentUser = Depends(get_current_user),
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=128),
+    current_user: AccessScope = Depends(require_perm(Perm.receipts_issue)),
     db: AsyncSession = Depends(get_db),
 ):
     tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
     user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+
+    # A repeated idempotency key returns the receipt already issued instead of a duplicate.
+    key = idempotency_key or payload.idempotency_key
+    if key:
+        prior = (
+            await db.execute(select(Receipt).where(Receipt.tenant_id == tenant.id, Receipt.idempotency_key == key))
+        ).scalar_one_or_none()
+        if prior is not None:
+            ensure_document_visible(current_user, prior, "Receipt")
+            response.status_code = status.HTTP_200_OK
+            return prior
+
+    if payload.paid_at > notif.tenant_today(tenant):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Payment date cannot be in the future")
 
     if payload.corrects_receipt_id:
         original = (
@@ -90,10 +84,17 @@ async def create_receipt(
                 )
             )
         ).scalar_one_or_none()
-        if original is None:
+        if original is None or not document_visible(current_user, original):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original receipt not found")
 
-    customer = await _get_or_create_customer(db, current_user.tenant_id, payload)
+    customer = await get_or_create_customer(
+        db, current_user.tenant_id, customer_id=payload.customer_id, name=payload.customer_name,
+        email=payload.customer_email, phone=payload.customer_phone,
+    )
+    ctx = await validate_doc_context(
+        db, current_user, property_id=payload.property_id, unit_id=payload.unit_id, tenancy_id=payload.tenancy_id,
+        customer_id=customer.id,
+    )
 
     receipt = await create_receipt_record(
         db,
@@ -108,6 +109,10 @@ async def create_receipt(
         paid_at=payload.paid_at,
         balance_cents=payload.balance_cents,
         corrects_receipt_id=payload.corrects_receipt_id,
+        property_id=ctx.property_id,
+        unit_id=ctx.unit_id,
+        tenancy_id=ctx.tenancy_id,
+        idempotency_key=key,
     )
     await db.commit()
     await db.refresh(receipt)
@@ -122,12 +127,18 @@ async def list_receipts(
     date_to: date | None = Query(default=None),
     amount_cents: int | None = Query(default=None),
     status_filter: ReceiptStatus | None = Query(default=None, alias="status"),
+    customer_id: uuid.UUID | None = Query(default=None),
+    property_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Receipt).where(Receipt.tenant_id == current_user.tenant_id)
+    stmt = scope_documents(select(Receipt), Receipt, current_user)
+    if customer_id:
+        stmt = stmt.where(Receipt.customer_id == customer_id)
+    if property_id:
+        stmt = stmt.where(Receipt.property_id == property_id)
 
     if payer_name:
         stmt = stmt.join(Customer, Customer.id == Receipt.customer_id).where(Customer.name.ilike(f"%{payer_name}%"))
@@ -151,15 +162,13 @@ async def list_receipts(
 @router.get("/{receipt_id}", response_model=ReceiptDetailOut)
 async def get_receipt(
     receipt_id: uuid.UUID,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(Receipt).where(Receipt.id == receipt_id, Receipt.tenant_id == current_user.tenant_id)
     )
-    receipt = result.scalar_one_or_none()
-    if receipt is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found")
+    receipt = ensure_document_visible(current_user, result.scalar_one_or_none(), "Receipt")
 
     attempts_result = await db.execute(
         select(DeliveryAttempt).where(DeliveryAttempt.receipt_id == receipt.id).order_by(DeliveryAttempt.attempted_at)
@@ -281,11 +290,10 @@ async def _send_channel(
     return attempt
 
 
-async def _load_receipt_with_customer(db: AsyncSession, receipt_id: uuid.UUID, tenant_id: uuid.UUID):
+async def _load_receipt_with_customer(db: AsyncSession, receipt_id: uuid.UUID, scope: AccessScope):
+    tenant_id = scope.tenant_id
     result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.tenant_id == tenant_id))
-    receipt = result.scalar_one_or_none()
-    if receipt is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found")
+    receipt = ensure_document_visible(scope, result.scalar_one_or_none(), "Receipt")
 
     tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one()
     customer = (await db.execute(select(Customer).where(Customer.id == receipt.customer_id))).scalar_one()
@@ -296,10 +304,10 @@ async def _load_receipt_with_customer(db: AsyncSession, receipt_id: uuid.UUID, t
 async def send_receipt(
     receipt_id: uuid.UUID,
     payload: SendReceiptRequest,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.receipts_issue)),
     db: AsyncSession = Depends(get_db),
 ):
-    receipt, tenant, customer = await _load_receipt_with_customer(db, receipt_id, current_user.tenant_id)
+    receipt, tenant, customer = await _load_receipt_with_customer(db, receipt_id, current_user)
 
     attempts = []
     for channel in payload.channels:
@@ -337,10 +345,10 @@ async def send_receipt(
 async def resend_receipt(
     receipt_id: uuid.UUID,
     payload: SendReceiptRequest,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.receipts_issue)),
     db: AsyncSession = Depends(get_db),
 ):
-    receipt, tenant, customer = await _load_receipt_with_customer(db, receipt_id, current_user.tenant_id)
+    receipt, tenant, customer = await _load_receipt_with_customer(db, receipt_id, current_user)
 
     attempts = []
     for channel in payload.channels:

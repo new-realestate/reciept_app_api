@@ -84,6 +84,20 @@ See `.env.example`. All secrets are read via `pydantic-settings`; nothing is har
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | SMS delivery |
 | `APP_BASE_URL` | Used to build hosted receipt links (`/r/{token}`) and email/reset links |
 | `STORAGE_DIR` | Local disk path for uploaded logos/signatures and generated PDFs (swap for S3/GCS later without changing callers — see `app/services/pdf.py`) |
+| `KYC_ENCRYPTION_KEY` | Fernet key that encrypts KYC identity-document numbers. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Keep it secret and back it up: numbers stored with a lost key can't be recovered. KYC endpoints that store or reveal an ID number return 503 while it is unset |
+
+## Properties, staff, tenants and KYC
+
+Roles, permission flags, data scoping and the KYC rules are in [docs/roles-and-permissions.md](docs/roles-and-permissions.md).
+
+```bash
+alembic upgrade head   # applies 0005 (staff, properties) and 0006 (customer profiles, renters, tenancies, KYC)
+python scripts/report_unmapped.py   # read-only: existing records you may want to link to a property by hand
+```
+
+Both migrations are additive. Existing documents stay general transactions (no property is
+inferred), customer phone numbers are backfilled to E.164 where they parse, and receipt numbering
+moves to the per-business counter, starting after the highest number already issued.
 
 ## Core flow
 

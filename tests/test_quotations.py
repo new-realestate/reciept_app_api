@@ -185,7 +185,7 @@ async def test_convert_accepted_quotation_to_invoice(client, signup):
     # no payment happened, so no receipt exists
     assert (await client.get("/receipts", headers=headers)).json() == []
     # duplicate conversion is refused and the original quotation is untouched
-    dup = await client.post(f"/quotations/{q['id']}/convert", json={"due_date": due}, headers=headers)
+    dup = await client.post(f"/quotations/{q['id']}/convert", json={"payment_received_confirmed": True, "due_date": due}, headers=headers)
     assert dup.status_code == 409
     after = (await client.get(f"/quotations/{q['id']}", headers=headers)).json()
     assert after["status"] == "accepted" and after["converted_invoice_id"] == inv["id"]

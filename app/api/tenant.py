@@ -5,13 +5,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import AccessScope, get_scope, require_manager_scope
 from app.core.audit import record_audit_event
 from app.core.config import get_settings
 from app.core.deps import CurrentUser, get_current_user
 from app.db.session import get_db
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.schemas.tenant import LogoUploadResponse, MeOut, SignatureUploadResponse, TenantOut, TenantUpdate
+from app.schemas.tenant import BusinessBranding, LogoUploadResponse, MeOut, SignatureUploadResponse, TenantOut, TenantUpdate
 from app.services import storage
 
 router = APIRouter(tags=["tenant"])
@@ -58,12 +59,13 @@ async def get_my_tenant(current_user: CurrentUser = Depends(get_current_user), d
 @router.patch("/tenant/me", response_model=TenantOut)
 async def update_my_tenant(
     payload: TenantUpdate,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_manager_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant = await _get_tenant(db, current_user.tenant_id)
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(tenant, field, value)
 
     await record_audit_event(
@@ -73,6 +75,7 @@ async def update_my_tenant(
         action="tenant.letterhead_updated",
         entity_type="tenant",
         entity_id=tenant.id,
+        metadata={"fields": sorted(changes)},
     )
     await db.commit()
     await db.refresh(tenant)
@@ -82,7 +85,7 @@ async def update_my_tenant(
 @router.post("/tenant/logo", response_model=LogoUploadResponse)
 async def upload_logo(
     file: UploadFile = File(...),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_manager_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant = await _get_tenant(db, current_user.tenant_id)
@@ -109,11 +112,18 @@ async def upload_signature(
 
 
 @router.get("/users/me", response_model=MeOut)
-async def get_me(current_user: CurrentUser = Depends(get_current_user)):
+async def get_me(current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """The signed-in user, what they may do (permission flags, assigned properties) and their business's branding."""
     user = current_user.user
+    tenant = await db.get(Tenant, current_user.tenant_id)
     return MeOut(
-        id=user.id, full_name=user.full_name, email=str(user.email), role=user.role,
-        signature_image_url=user.signature_image_url,
+        id=user.id, full_name=user.full_name, email=str(user.email), role=current_user.role,
+        signature_image_url=user.signature_image_url, phone=user.phone,
+        permissions=sorted(current_user.perms), is_manager=current_user.is_manager,
+        assigned_property_ids=sorted(current_user.property_ids, key=str),
+        business=BusinessBranding(
+            id=tenant.id, name=tenant.business_name, logo_url=tenant.logo_url, brand_color=tenant.brand_color
+        ) if tenant else None,
     )
 
 

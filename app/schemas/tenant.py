@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -8,11 +9,15 @@ from app.models.enums import UserRole
 
 ReceiptTemplateName = Literal["classic", "modern"]
 
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
 
 class TenantOut(BaseModel):
     id: uuid.UUID
     business_name: str
     logo_url: str | None
+    # Accent colour (#rrggbb) used in the portal for this business and on documents; null = default.
+    brand_color: str | None = None
     po_box: str | None
     physical_address: str | None
     contact_phone: str | None
@@ -37,6 +42,17 @@ class TenantUpdate(BaseModel):
     receipt_template: ReceiptTemplateName | None = None
     default_currency: str | None = Field(default=None, min_length=3, max_length=3)
     timezone: str | None = None
+    # Send null to go back to the default colour.
+    brand_color: str | None = None
+
+    @field_validator("brand_color")
+    @classmethod
+    def _hex_color(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not _HEX_COLOR.match(v):
+            raise ValueError("Use a hex colour such as #1f7a5c")
+        return v.lower()
 
     @field_validator("timezone")
     @classmethod
@@ -63,6 +79,13 @@ class SignatureUploadResponse(BaseModel):
     signature_image_url: str
 
 
+class BusinessBranding(BaseModel):
+    id: uuid.UUID
+    name: str
+    logo_url: str | None
+    brand_color: str | None
+
+
 class MeOut(BaseModel):
     """The signed-in user, including the signature printed on receipts they issue."""
 
@@ -71,3 +94,9 @@ class MeOut(BaseModel):
     email: str
     role: UserRole
     signature_image_url: str | None
+    phone: str | None = None
+    permissions: list[str] = []
+    is_manager: bool = False
+    assigned_property_ids: list[uuid.UUID] = []
+    # The business the caller works in (for a super admin acting as one, that business).
+    business: BusinessBranding | None = None

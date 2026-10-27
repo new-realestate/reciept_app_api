@@ -7,14 +7,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.models.context import PropertyContextMixin, property_context_fks
 from app.models.types import JSONBType, UUIDType
 
 
-class Quotation(Base):
+class Quotation(PropertyContextMixin, Base):
     __tablename__ = "quotations"
     __table_args__ = (
         UniqueConstraint("tenant_id", "number", name="uq_quotations_tenant_number"),
         CheckConstraint("total_cents >= 0", name="chk_quotation_total_nonneg"),
+        *property_context_fks("quotations"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)

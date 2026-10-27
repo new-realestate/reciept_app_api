@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # AWS_* env vars that `neon deploy` / `neon env pull` write).
     storage_backend: str = "local"
     storage_bucket: str = "uploads"
+
+    # KYC (identity verification). Identity document numbers are encrypted with this
+    # Fernet key (generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())").
+    # KYC endpoints that store or reveal an ID number return 503 while it is unset.
+    kyc_encryption_key: str = ""
+    kyc_max_document_bytes: int = 10 * 1024 * 1024
+    # Lifetime of a KYC document download link.
+    kyc_download_link_seconds: int = 300
     # Read here (not only by boto3 from os.environ) so values in .env work too.
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""

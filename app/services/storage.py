@@ -22,6 +22,15 @@ def is_valid_key(key: str) -> bool:
     return bool(parts) and not key.startswith("/") and "\\" not in key and all(p not in ("", ".", "..") for p in parts)
 
 
+# Objects under this prefix (KYC identity documents) are never served by the public
+# /static route; they are only streamed through authorized, short-lived links.
+PRIVATE_PREFIX = "private/"
+
+
+def is_public_key(key: str) -> bool:
+    return is_valid_key(key) and not key.startswith(PRIVATE_PREFIX)
+
+
 def _check_key(key: str) -> None:
     if not is_valid_key(key):
         raise ValueError(f"Invalid storage key: {key!r}")
@@ -74,6 +83,14 @@ def get(key: str) -> bytes | None:
         return response["Body"].read()
     path = _local_path(key)
     return path.read_bytes() if path.is_file() else None
+
+
+def delete(key: str) -> None:
+    _check_key(key)
+    if _use_s3():
+        _s3_client().delete_object(Bucket=get_settings().storage_bucket, Key=key)
+        return
+    _local_path(key).unlink(missing_ok=True)
 
 
 def delete_prefix(prefix: str, *, keep: str | None = None) -> None:

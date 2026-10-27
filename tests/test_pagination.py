@@ -7,7 +7,7 @@ async def test_receipts_and_customers_paginate_with_total_header(client, signup)
     cust = (await client.post("/customers", json={"name": "A", "email": "a@example.com"}, headers=headers)).json()
     for i in range(5):
         await client.post("/customers", json={"name": f"C{i}", "email": f"c{i}@example.com"}, headers=headers)
-        await client.post("/receipts", json={"customer_id": cust["id"], "amount_cents": 1000 + i, "reason": "Rent",
+        await client.post("/receipts", json={"payment_received_confirmed": True, "customer_id": cust["id"], "amount_cents": 1000 + i, "reason": "Rent",
                                               "payment_method": "cash", "paid_at": "2026-07-01"}, headers=headers)
 
     everything = await client.get("/receipts", headers=headers)

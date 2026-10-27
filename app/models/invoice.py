@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.models.context import PropertyContextMixin, property_context_fks
 from app.models.types import JSONBType, UUIDType
 
 
@@ -34,12 +35,13 @@ class DocumentCounter(Base):
     last_value: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
-class Invoice(Base):
+class Invoice(PropertyContextMixin, Base):
     __tablename__ = "invoices"
     __table_args__ = (
         UniqueConstraint("tenant_id", "number", name="uq_invoices_tenant_number"),
         CheckConstraint("total_cents >= 0", name="chk_invoice_total_nonneg"),
         CheckConstraint("amount_paid_cents >= 0 AND amount_paid_cents <= total_cents", name="chk_invoice_paid_range"),
+        *property_context_fks("invoices"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)

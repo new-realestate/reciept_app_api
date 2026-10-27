@@ -1,0 +1,525 @@
+---
+title: Receipt API — Domain Class Diagram (app/models)
+---
+classDiagram
+    direction TB
+
+    %% ───────────── Tenancy & identity ─────────────
+    class Tenant {
+        +UUID id
+        +str business_name
+        +str? logo_url
+        +str? brand_color
+        +str? po_box
+        +str? physical_address
+        +str? contact_phone
+        +str? contact_email
+        +str? bank_name
+        +str? bank_account_number
+        +PlanTier plan_tier
+        +str default_currency
+        +str receipt_template
+        +str timezone
+        +dict? reminder_settings
+        +datetime? deleted_at
+        +datetime? suspended_at
+        +str? suspended_reason
+        +datetime created_at
+        +datetime updated_at
+    }
+
+    class User {
+        +UUID id
+        +UUID? tenant_id
+        +str full_name
+        +str email
+        +str password_hash
+        +UserRole role
+        +str? signature_image_url
+        +bool is_verified
+        +bool is_superadmin
+        +datetime? suspended_at
+        +str? suspended_reason
+        +str? email_verification_token
+        +str? password_reset_token
+        +datetime? password_reset_expires_at
+        +datetime? last_login_at
+        +str? phone
+        +list? permissions
+        +datetime? deactivated_at
+        +UUID? deactivated_by_user_id
+        +UUID? created_by_user_id
+        +datetime created_at
+        +datetime updated_at
+    }
+
+    class ApiKey {
+        +UUID id
+        +UUID tenant_id
+        +str key_prefix
+        +str key_hash
+        +int rate_limit_per_minute
+        +bool is_active
+        +UUID? created_by_user_id
+        +datetime? last_used_at
+        +datetime? revoked_at
+        +datetime created_at
+    }
+
+    class Customer {
+        +UUID id
+        +UUID tenant_id
+        +str name
+        +str? email
+        +str? phone
+        +str? phone_normalized
+        +str customer_type
+        +str? legal_name
+        +str? billing_address
+        +str? tax_identification_number
+        +str? notes
+        +str status
+        +datetime created_at
+        +datetime updated_at
+    }
+    note for Customer "CHECK: email OR phone is set"
+
+    %% ───────────── Receipts ─────────────
+    class Receipt {
+        +UUID id
+        +UUID tenant_id
+        +UUID customer_id
+        +str reference_number
+        +ReceiptStatus status
+        +str currency
+        +int amount_cents
+        +str amount_in_words
+        +int balance_cents
+        +str reason
+        +PaymentMethodType payment_method
+        +str? payment_reference
+        +date paid_at
+        +UUID issued_by_user_id
+        +str issuer_printed_name
+        +str? signature_image_url
+        +UUID? corrects_receipt_id
+        +str hosted_view_token
+        +str? pdf_url
+        +str? idempotency_key
+        +UUID? property_id
+        +UUID? unit_id
+        +UUID? tenancy_id
+        +datetime created_at
+    }
+
+    class DeliveryAttempt {
+        +UUID id
+        +UUID receipt_id
+        +DeliveryChannel channel
+        +DeliveryStatus status
+        +str recipient
+        +str? provider
+        +str? provider_message_id
+        +dict? provider_response
+        +int attempt_number
+        +datetime attempted_at
+        +datetime? resolved_at
+    }
+
+    class Suppression {
+        +UUID id
+        +UUID? tenant_id
+        +DeliveryChannel channel
+        +str contact
+        +str? reason
+        +datetime created_at
+    }
+
+    %% ───────────── Invoicing ─────────────
+    class Invoice {
+        +UUID id
+        +UUID tenant_id
+        +UUID customer_id
+        +str? number
+        +str status
+        +str? title
+        +str currency
+        +date issue_date
+        +date due_date
+        +int subtotal_cents
+        +Decimal? discount_percent
+        +int discount_cents
+        +int tax_cents
+        +int total_cents
+        +int amount_paid_cents
+        +str? notes
+        +str? payment_instructions
+        +str? public_token
+        +datetime? token_revoked_at
+        +UUID? quotation_id
+        +UUID? schedule_occurrence_id
+        +bool reminders_enabled
+        +dict? reminder_overrides
+        +dict? snapshot
+        +UUID? created_by_user_id
+        +datetime? issued_at
+        +datetime? cancelled_at
+        +str? cancel_reason
+        +list~InvoiceLineItem~ line_items
+    }
+    note for Invoice "status: draft | issued | cancelled\n(paid / partially_paid / overdue are derived)"
+
+    class InvoiceLineItem {
+        +UUID id
+        +UUID invoice_id
+        +int position
+        +str description
+        +Decimal quantity
+        +int unit_price_cents
+        +Decimal? tax_rate
+        +int line_total_cents
+    }
+
+    class InvoicePayment {
+        +UUID id
+        +UUID tenant_id
+        +UUID invoice_id
+        +UUID receipt_id
+        +int amount_cents
+        +date paid_at
+        +str method
+        +str? reference
+        +str? idempotency_key
+        +UUID? recorded_by_user_id
+        +datetime created_at
+    }
+
+    class DocumentCounter {
+        +UUID tenant_id  «PK»
+        +str kind  «PK»
+        +int last_value
+    }
+
+    %% ───────────── Quotations ─────────────
+    class Quotation {
+        +UUID id
+        +UUID tenant_id
+        +UUID customer_id
+        +str? number
+        +str status
+        +str? title
+        +str? description
+        +str currency
+        +date issue_date
+        +date valid_until
+        +int subtotal_cents
+        +Decimal? discount_percent
+        +int discount_cents
+        +int tax_cents
+        +int total_cents
+        +str? terms
+        +str? notes
+        +str? internal_notes
+        +str? public_token
+        +datetime? token_revoked_at
+        +datetime? sent_at
+        +datetime? viewed_at
+        +datetime? responded_at
+        +str? accepted_name
+        +str? response_comment
+        +dict? snapshot
+        +UUID? created_by_user_id
+        +datetime? cancelled_at
+        +list~QuotationLineItem~ line_items
+    }
+    note for Quotation "status: draft | sent | viewed | accepted\n| rejected | expired | cancelled"
+
+    class QuotationLineItem {
+        +UUID id
+        +UUID quotation_id
+        +int position
+        +str description
+        +Decimal quantity
+        +int unit_price_cents
+        +Decimal? tax_rate
+        +int line_total_cents
+    }
+
+    %% ───────────── Payment schedules ─────────────
+    class PaymentSchedule {
+        +UUID id
+        +UUID tenant_id
+        +UUID customer_id
+        +str description
+        +str? reference_label
+        +int amount_cents
+        +str currency
+        +str frequency
+        +date first_due_date
+        +date? end_date
+        +int? max_occurrences
+        +str status
+        +bool reminders_enabled
+        +dict? reminder_overrides
+        +bool auto_invoice
+        +UUID? created_by_user_id
+    }
+
+    class ScheduleOccurrence {
+        +UUID id
+        +UUID tenant_id
+        +UUID schedule_id
+        +int seq
+        +date due_date
+        +int amount_cents
+        +str status
+        +int amount_paid_cents
+        +datetime created_at
+    }
+
+    %% ───────────── Notifications, audit, usage ─────────────
+    class NotificationEvent {
+        +UUID id
+        +UUID tenant_id
+        +str kind
+        +str subject_type
+        +UUID subject_id
+        +str channel
+        +str recipient_party
+        +str? recipient
+        +datetime scheduled_for
+        +str status
+        +str? skip_reason
+        +int attempts
+        +str dedupe_key  «unique»
+        +dict? payload
+        +datetime? sent_at
+    }
+    note for NotificationEvent "subject_type: invoice | quotation | occurrence\n(polymorphic reference via subject_id)"
+
+    class NotificationAttempt {
+        +UUID id
+        +UUID event_id
+        +int attempt_no
+        +str status
+        +str? provider
+        +str? provider_message_id
+        +dict? response
+        +datetime attempted_at
+    }
+
+    class AuditLog {
+        +UUID id
+        +UUID? tenant_id
+        +UUID? actor_user_id
+        +str action
+        +str entity_type
+        +UUID? entity_id
+        +dict? metadata
+        +datetime created_at
+    }
+
+    class UsageCounter {
+        +UUID id
+        +UUID tenant_id
+        +date period_start
+        +date period_end
+        +int emails_sent
+        +int sms_sent
+        +int receipts_created
+    }
+
+    %% ───────────── Properties, renters, KYC ─────────────
+    class Property {
+        +UUID id
+        +UUID tenant_id
+        +str name
+        +str property_type
+        +str? address
+        +str? location
+        +str? description
+        +str status
+        +UUID? created_by_user_id
+    }
+    class PropertyUnit {
+        +UUID id
+        +UUID tenant_id
+        +UUID property_id
+        +str label
+        +str unit_type
+        +str status
+        +int? default_rent_cents
+    }
+    class PropertyStaffAssignment {
+        +UUID id
+        +UUID tenant_id
+        +UUID property_id
+        +UUID user_id
+        +UUID? assigned_by_user_id
+        +datetime assigned_at
+        +UUID? revoked_by_user_id
+        +datetime? revoked_at
+    }
+    class Renter {
+        +UUID id
+        +UUID tenant_id
+        +UUID customer_id  «unique»
+        +str status
+        +str? occupation
+        +str? employer
+        +str? notes
+    }
+    class Tenancy {
+        +UUID id
+        +UUID tenant_id
+        +UUID renter_id
+        +UUID property_id
+        +UUID? unit_id
+        +str reference
+        +date start_date
+        +date? end_date
+        +int rent_amount_cents
+        +str currency
+        +str rent_frequency
+        +int deposit_cents
+        +str status
+    }
+    class KycProfile {
+        +UUID id
+        +UUID tenant_id
+        +UUID? user_id
+        +UUID? renter_id
+        +str? legal_name
+        +date? date_of_birth
+        +str? id_document_type
+        +str? id_number_encrypted
+        +str? id_number_last4
+        +date? id_expiry_date
+        +str status
+        +str verification_method
+        +UUID? reviewed_by_user_id
+        +str? review_note
+    }
+    class KycDocument {
+        +UUID id
+        +UUID profile_id
+        +str kind
+        +str storage_key  «private»
+        +str content_type
+        +int size_bytes
+        +str sha256
+        +datetime? deleted_at
+    }
+    class KycReview {
+        +UUID id
+        +UUID profile_id
+        +str decision
+        +str? note
+        +UUID? reviewer_user_id
+    }
+    note for KycProfile "Exactly one subject: a staff user or a renter"
+
+    %% ───────────── Enumerations ─────────────
+    class UserRole {
+        <<enumeration>>
+        owner
+        admin
+        staff
+    }
+    class ReceiptStatus {
+        <<enumeration>>
+        issued
+        voided
+        refunded
+    }
+    class PaymentMethodType {
+        <<enumeration>>
+        cash
+        bank_transfer
+        mobile_money
+        cheque
+        other
+    }
+    class DeliveryChannel {
+        <<enumeration>>
+        email
+        sms
+    }
+    class DeliveryStatus {
+        <<enumeration>>
+        queued
+        sent
+        delivered
+        bounced
+        failed
+        opened
+    }
+    class PlanTier {
+        <<enumeration>>
+        free_trial
+        starter
+        growth
+        enterprise
+    }
+
+    %% ───────────── Relationships ─────────────
+    Tenant "0..1" -- "*" User : employs
+    Tenant "1" *-- "*" Customer
+    Tenant "1" *-- "*" ApiKey
+    Tenant "1" *-- "*" Receipt
+    Tenant "1" *-- "*" Invoice
+    Tenant "1" *-- "*" Quotation
+    Tenant "1" *-- "*" PaymentSchedule
+    Tenant "1" *-- "*" DocumentCounter
+    Tenant "1" *-- "*" UsageCounter
+    Tenant "1" *-- "*" NotificationEvent
+    Tenant "0..1" -- "*" AuditLog
+    Tenant "0..1" -- "*" Suppression
+
+    Customer "1" -- "*" Receipt : pays
+    Customer "1" -- "*" Invoice : billed
+    Customer "1" -- "*" Quotation : quoted
+    Customer "1" -- "*" PaymentSchedule : owes
+
+    User "1" -- "*" Receipt : issues
+    User "0..1" -- "*" AuditLog : actor
+    User "0..1" -- "*" ApiKey : created by
+
+    Receipt "0..1" <-- "*" Receipt : corrects
+    Receipt "1" *-- "*" DeliveryAttempt : delivered via
+
+    Invoice "1" *-- "*" InvoiceLineItem : line_items
+    Invoice "1" o-- "*" InvoicePayment : payments
+    InvoicePayment "1" -- "1" Receipt : evidenced by
+
+    Quotation "1" *-- "*" QuotationLineItem : line_items
+    Quotation "0..1" -- "0..1" Invoice : converted to
+
+    PaymentSchedule "1" *-- "*" ScheduleOccurrence : generates
+    ScheduleOccurrence "0..1" -- "0..1" Invoice : invoiced as
+
+    NotificationEvent "1" *-- "*" NotificationAttempt : attempts
+
+    Tenant "1" *-- "*" Property
+    Property "1" *-- "*" PropertyUnit : units
+    Property "1" *-- "*" PropertyStaffAssignment : staff access
+    User "1" -- "*" PropertyStaffAssignment : assigned
+    Tenant "1" *-- "*" Renter
+    Customer "1" -- "0..1" Renter : tenant profile
+    Renter "1" *-- "*" Tenancy : tenancies
+    Property "1" -- "*" Tenancy
+    PropertyUnit "0..1" -- "*" Tenancy
+    Tenancy "0..1" -- "*" Receipt : context
+    Property "0..1" -- "*" Invoice : context
+    User "0..1" -- "0..1" KycProfile : staff KYC
+    Renter "0..1" -- "0..1" KycProfile : tenant KYC
+    KycProfile "1" *-- "*" KycDocument : documents
+    KycProfile "1" *-- "*" KycReview : decisions
+
+    User ..> UserRole
+    Tenant ..> PlanTier
+    Receipt ..> ReceiptStatus
+    Receipt ..> PaymentMethodType
+    DeliveryAttempt ..> DeliveryChannel
+    DeliveryAttempt ..> DeliveryStatus
+    Suppression ..> DeliveryChannel

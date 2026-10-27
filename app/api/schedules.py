@@ -9,8 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.invoices import _ctx
 from app.api.invoices import _detail as invoice_detail
+from app.core.access import (
+    AccessScope,
+    Perm,
+    ensure_document_visible,
+    get_scope,
+    require_perm,
+    scope_documents,
+    validate_doc_context,
+)
 from app.core.audit import record_audit_event
-from app.core.deps import CurrentUser, get_current_user
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.invoice import Invoice
@@ -65,6 +73,7 @@ async def _schedule_out(db: AsyncSession, s: PaymentSchedule, *, detail: bool = 
         end_date=s.end_date, max_occurrences=s.max_occurrences, status=s.status, reminders_enabled=s.reminders_enabled,
         reminder_overrides=s.reminder_overrides, auto_invoice=s.auto_invoice,
         next_due_date=nxt.due_date if nxt else None, next_amount_cents=nxt.amount_cents if nxt else None, created_at=s.created_at,
+        property_id=s.property_id, unit_id=s.unit_id, tenancy_id=s.tenancy_id,
     )
     if not detail:
         return ScheduleOut(**data)
@@ -72,14 +81,24 @@ async def _schedule_out(db: AsyncSession, s: PaymentSchedule, *, detail: bool = 
     return ScheduleDetailOut(**data, occurrences=await _occurrence_outs(db, list(occs), today or date.today()))
 
 
+async def _get_schedule(db: AsyncSession, scope: AccessScope, schedule_id: uuid.UUID, *, lock: bool = False) -> PaymentSchedule:
+    schedule = await svc.get_schedule(db, scope.tenant_id, schedule_id, lock=lock)
+    return ensure_document_visible(scope, schedule, "Schedule")
+
+
 @router.post("", response_model=ScheduleDetailOut, status_code=status.HTTP_201_CREATED)
-async def create_schedule(payload: ScheduleCreate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def create_schedule(payload: ScheduleCreate, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
     customer = await get_or_create_customer(
         db, tenant.id, customer_id=payload.customer_id, name=payload.customer_name,
         email=payload.customer_email, phone=payload.customer_phone,
     )
+    ctx = await validate_doc_context(
+        db, current_user, property_id=payload.property_id, unit_id=payload.unit_id, tenancy_id=payload.tenancy_id,
+        customer_id=customer.id,
+    )
     schedule = PaymentSchedule(
+        property_id=ctx.property_id, unit_id=ctx.unit_id, tenancy_id=ctx.tenancy_id,
         tenant_id=tenant.id, customer_id=customer.id, description=payload.description.strip(),
         reference_label=payload.reference_label, amount_cents=payload.amount_cents,
         currency=(payload.currency or tenant.default_currency).upper(), frequency=payload.frequency,
@@ -103,9 +122,10 @@ async def create_schedule(payload: ScheduleCreate, current_user: CurrentUser = D
 async def list_schedules(
     status_filter: str | None = Query(default=None, alias="status"),
     customer_id: uuid.UUID | None = None,
+    property_id: uuid.UUID | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     conds = [PaymentSchedule.tenant_id == current_user.tenant_id]
@@ -113,24 +133,27 @@ async def list_schedules(
         conds.append(PaymentSchedule.status == status_filter)
     if customer_id:
         conds.append(PaymentSchedule.customer_id == customer_id)
-    total = (await db.execute(select(func.count()).select_from(PaymentSchedule).where(*conds))).scalar_one()
-    rows = (await db.execute(select(PaymentSchedule).where(*conds).order_by(PaymentSchedule.created_at.desc()).limit(limit).offset(offset))).scalars().all()
+    if property_id:
+        conds.append(PaymentSchedule.property_id == property_id)
+    base = scope_documents(select(PaymentSchedule).where(*conds), PaymentSchedule, current_user)
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    rows = (await db.execute(base.order_by(PaymentSchedule.created_at.desc()).limit(limit).offset(offset))).scalars().all()
     return Page[ScheduleOut](items=[await _schedule_out(db, s) for s in rows], total=total, limit=limit, offset=offset)
 
 
 @router.get("/{schedule_id}", response_model=ScheduleDetailOut)
-async def get_schedule(schedule_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_schedule(schedule_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
-    s = await svc.get_schedule(db, tenant.id, schedule_id)
+    s = await _get_schedule(db, current_user, schedule_id)
     return await _schedule_out(db, s, detail=True, today=notif.tenant_today(tenant))
 
 
 @router.patch("/{schedule_id}", response_model=ScheduleDetailOut)
 async def update_schedule(
-    schedule_id: uuid.UUID, payload: ScheduleUpdate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    schedule_id: uuid.UUID, payload: ScheduleUpdate, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
-    s = await svc.get_schedule(db, tenant.id, schedule_id, lock=True)
+    s = await _get_schedule(db, current_user, schedule_id, lock=True)
     if s.status in ("cancelled", "completed"):
         raise HTTPException(status_code=409, detail=f"A {s.status} schedule cannot be edited")
     data = payload.model_dump(exclude_unset=True)
@@ -165,9 +188,9 @@ async def _cancel_schedule_events(db: AsyncSession, s: PaymentSchedule, reason: 
         await notif.cancel_pending_events(db, subject_type="occurrence", subject_id=oid, reason=reason)
 
 
-async def _transition(schedule_id: uuid.UUID, new_status: str, current_user: CurrentUser, db: AsyncSession):
+async def _transition(schedule_id: uuid.UUID, new_status: str, current_user: AccessScope, db: AsyncSession):
     tenant, user = await _ctx(db, current_user)
-    s = await svc.get_schedule(db, tenant.id, schedule_id, lock=True)
+    s = await _get_schedule(db, current_user, schedule_id, lock=True)
     today = notif.tenant_today(tenant)
     await svc.set_status(db, tenant=tenant, user_id=user.id, schedule=s, new_status=new_status, today=today)
     if new_status in ("paused", "cancelled"):
@@ -187,26 +210,26 @@ async def _transition(schedule_id: uuid.UUID, new_status: str, current_user: Cur
 
 
 @router.post("/{schedule_id}/pause", response_model=ScheduleDetailOut)
-async def pause_schedule(schedule_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def pause_schedule(schedule_id: uuid.UUID, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)):
     return await _transition(schedule_id, "paused", current_user, db)
 
 
 @router.post("/{schedule_id}/resume", response_model=ScheduleDetailOut)
-async def resume_schedule(schedule_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def resume_schedule(schedule_id: uuid.UUID, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)):
     return await _transition(schedule_id, "active", current_user, db)
 
 
 @router.post("/{schedule_id}/cancel", response_model=ScheduleDetailOut)
-async def cancel_schedule(schedule_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def cancel_schedule(schedule_id: uuid.UUID, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)):
     return await _transition(schedule_id, "cancelled", current_user, db)
 
 
 @router.patch("/{schedule_id}/reminders", response_model=ScheduleDetailOut)
 async def update_schedule_reminders(
-    schedule_id: uuid.UUID, payload: ScheduleReminderSettings, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    schedule_id: uuid.UUID, payload: ScheduleReminderSettings, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
-    s = await svc.get_schedule(db, tenant.id, schedule_id, lock=True)
+    s = await _get_schedule(db, current_user, schedule_id, lock=True)
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
     try:
         overrides = reminders.validate_settings({k: v for k, v in data.items() if k != "enabled"})
@@ -233,14 +256,14 @@ async def update_schedule_reminders(
 async def create_invoice_for_occurrence(
     occurrence_id: uuid.UUID,
     payload: CreateInvoiceFromOccurrence | None = None,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)),
     db: AsyncSession = Depends(get_db),
 ):
     """Explicitly turns an expected payment into an invoice. One invoice per occurrence, enforced by the database."""
     payload = payload or CreateInvoiceFromOccurrence()
     tenant, user = await _ctx(db, current_user)
     occ = await svc.get_occurrence(db, tenant.id, occurrence_id, lock=True)
-    schedule = await svc.get_schedule(db, tenant.id, occ.schedule_id)
+    schedule = await _get_schedule(db, current_user, occ.schedule_id)
     if occ.status != "expected":
         raise HTTPException(status_code=409, detail=f"This occurrence is {occ.status}; an invoice cannot be created for it")
     if schedule.status != "active":
@@ -256,6 +279,7 @@ async def create_invoice_for_occurrence(
         lines=[LineItemIn(description=schedule.description, quantity=Decimal(1), unit_price_cents=occ.amount_cents)],
         payment_instructions=payload.payment_instructions, reminders_enabled=schedule.reminders_enabled,
         schedule_occurrence_id=occ.id,
+        property_id=schedule.property_id, unit_id=schedule.unit_id, tenancy_id=schedule.tenancy_id,
     )
     occ.status = "invoiced"
     # The invoice now carries the reminders for this obligation; drop the occurrence's own.
@@ -269,9 +293,10 @@ async def create_invoice_for_occurrence(
 
 
 @router.post("/occurrences/{occurrence_id}/skip", response_model=OccurrenceOut)
-async def skip_occurrence(occurrence_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def skip_occurrence(occurrence_id: uuid.UUID, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
     occ = await svc.get_occurrence(db, tenant.id, occurrence_id, lock=True)
+    await _get_schedule(db, current_user, occ.schedule_id)  # 404 unless the caller may see the schedule
     if occ.status != "expected":
         raise HTTPException(status_code=409, detail=f"This occurrence is {occ.status} and cannot be skipped")
     occ.status = "skipped"

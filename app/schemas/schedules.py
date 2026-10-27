@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.documents import CustomerInline
+from app.schemas.documents import CustomerInline, PropertyContextOut
 
 Frequency = Literal["once", "weekly", "monthly", "quarterly", "annually"]
 
@@ -62,7 +62,7 @@ class OccurrenceOut(BaseModel):
     days_until_due: int
 
 
-class ScheduleOut(BaseModel):
+class ScheduleOut(PropertyContextOut):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

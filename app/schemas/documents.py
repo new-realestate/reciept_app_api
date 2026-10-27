@@ -37,7 +37,21 @@ class LineItemOut(BaseModel):
     line_total_cents: int
 
 
-class CustomerInline(BaseModel):
+class PropertyContextIn(BaseModel):
+    """Optional link to a property, unit or tenancy; leave empty for general business transactions."""
+
+    property_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = None
+    tenancy_id: uuid.UUID | None = None
+
+
+class PropertyContextOut(BaseModel):
+    property_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = None
+    tenancy_id: uuid.UUID | None = None
+
+
+class CustomerInline(PropertyContextIn):
     customer_id: uuid.UUID | None = None
     customer_name: str | None = None
     customer_email: str | None = None
@@ -140,7 +154,7 @@ class CancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
-class InvoiceOut(BaseModel):
+class InvoiceOut(PropertyContextOut):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -202,7 +216,7 @@ class QuotationUpdate(_DiscountMixin):
     internal_notes: str | None = None
 
 
-class QuotationOut(BaseModel):
+class QuotationOut(PropertyContextOut):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

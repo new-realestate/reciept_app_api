@@ -45,7 +45,7 @@ async def test_existing_receipt_endpoints_unchanged_for_staff(client, signup, db
     cust = (await client.post("/customers", json={"name": "J", "email": "j@example.com"}, headers=headers)).json()
     resp = await client.post(
         "/receipts",
-        json={"customer_id": cust["id"], "amount_cents": 1000, "reason": "Rent", "payment_method": "cash", "paid_at": str(TODAY)},
+        json={"payment_received_confirmed": True, "customer_id": cust["id"], "amount_cents": 1000, "reason": "Rent", "payment_method": "cash", "paid_at": str(TODAY)},
         headers=headers,
     )
     assert resp.status_code == 201

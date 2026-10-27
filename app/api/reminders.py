@@ -6,13 +6,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.invoices import _ctx
+from app.core.access import AccessScope, get_scope, require_manager_scope, scope_documents
 from app.core.audit import record_audit_event
-from app.core.deps import CurrentUser, get_current_user
-from app.core.permissions import require_manager
 from app.db.session import get_db
 from app.models.audit import AuditLog
 from app.models.customer import Customer
@@ -32,6 +31,26 @@ router = APIRouter(tags=["reminders"])
 # ---------------------------------------------------------------- notifications
 
 
+def _visible_events(scope: AccessScope):
+    """Restricts notification events to subjects (invoice / quotation / occurrence) the caller can see."""
+    if scope.is_manager:
+        return NotificationEvent.tenant_id == scope.tenant_id
+    invoice_ids = scope_documents(select(Invoice.id), Invoice, scope)
+    quotation_ids = scope_documents(select(Quotation.id), Quotation, scope)
+    occurrence_ids = scope_documents(
+        select(ScheduleOccurrence.id).join(PaymentSchedule, PaymentSchedule.id == ScheduleOccurrence.schedule_id),
+        PaymentSchedule, scope,
+    )
+    return and_(
+        NotificationEvent.tenant_id == scope.tenant_id,
+        or_(
+            and_(NotificationEvent.subject_type == "invoice", NotificationEvent.subject_id.in_(invoice_ids)),
+            and_(NotificationEvent.subject_type == "quotation", NotificationEvent.subject_id.in_(quotation_ids)),
+            and_(NotificationEvent.subject_type == "occurrence", NotificationEvent.subject_id.in_(occurrence_ids)),
+        ),
+    )
+
+
 @router.get("/notifications", response_model=Page[NotificationEventOut])
 async def list_notifications(
     status_filter: str | None = Query(default=None, alias="status"),
@@ -41,10 +60,10 @@ async def list_notifications(
     channel: str | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
-    conds = [NotificationEvent.tenant_id == current_user.tenant_id]
+    conds = [_visible_events(current_user)]
     for column, value in ((NotificationEvent.status, status_filter), (NotificationEvent.kind, kind),
                           (NotificationEvent.subject_type, subject_type), (NotificationEvent.subject_id, subject_id),
                           (NotificationEvent.channel, channel)):
@@ -57,9 +76,9 @@ async def list_notifications(
     return Page[NotificationEventOut](items=await notif.events_with_attempts(db, list(rows)), total=total, limit=limit, offset=offset)
 
 
-async def _event(db: AsyncSession, tenant_id: uuid.UUID, event_id: uuid.UUID) -> NotificationEvent:
+async def _event(db: AsyncSession, scope: AccessScope, event_id: uuid.UUID) -> NotificationEvent:
     event = (
-        await db.execute(select(NotificationEvent).where(NotificationEvent.id == event_id, NotificationEvent.tenant_id == tenant_id))
+        await db.execute(select(NotificationEvent).where(NotificationEvent.id == event_id, _visible_events(scope)))
     ).scalar_one_or_none()
     if event is None:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -67,9 +86,9 @@ async def _event(db: AsyncSession, tenant_id: uuid.UUID, event_id: uuid.UUID) ->
 
 
 @router.post("/notifications/{event_id}/retry", response_model=NotificationEventOut)
-async def retry_notification(event_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def retry_notification(event_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """Retry a failed (or skipped) notification. The subject is re-checked first, so a paid/cancelled invoice still won't be chased."""
-    event = await _event(db, current_user.tenant_id, event_id)
+    event = await _event(db, current_user, event_id)
     try:
         await notif.retry_event(db, event)
     except ValueError as exc:
@@ -79,9 +98,9 @@ async def retry_notification(event_id: uuid.UUID, current_user: CurrentUser = De
 
 
 @router.post("/notifications/{event_id}/cancel", response_model=NotificationEventOut)
-async def cancel_notification(event_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def cancel_notification(event_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """Stop a scheduled (not yet sent) reminder."""
-    event = await _event(db, current_user.tenant_id, event_id)
+    event = await _event(db, current_user, event_id)
     if event.status not in ("scheduled", "failed"):
         raise HTTPException(status_code=409, detail=f"A {event.status} notification cannot be cancelled")
     event.status = "cancelled"
@@ -100,14 +119,14 @@ def _settings_out(tenant) -> ReminderSettingsOut:
 
 
 @router.get("/reminder-settings", response_model=ReminderSettingsOut)
-async def get_reminder_settings(current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_reminder_settings(current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
     return _settings_out(tenant)
 
 
 @router.put("/reminder-settings", response_model=ReminderSettingsOut)
 async def put_reminder_settings(
-    payload: ReminderSettingsUpdate, current_user: CurrentUser = Depends(require_manager), db: AsyncSession = Depends(get_db)
+    payload: ReminderSettingsUpdate, current_user: AccessScope = Depends(require_manager_scope), db: AsyncSession = Depends(get_db)
 ):
     """Business-wide defaults. Applies to reminders planned from now on; open invoices are re-planned."""
     tenant, user = await _ctx(db, current_user)
@@ -139,6 +158,7 @@ def _status_for(due: date, today: date) -> Literal["overdue", "due_today", "upco
 async def collect_payments(
     db: AsyncSession, tenant_id: uuid.UUID, today: date, *, customer_id: uuid.UUID | None = None,
     schedule_id: uuid.UUID | None = None, date_from: date | None = None, date_to: date | None = None,
+    scope: AccessScope | None = None,
 ) -> list[UpcomingPaymentOut]:
     """Open invoices (balance owed) plus expected schedule payments that have no invoice yet."""
     out: list[UpcomingPaymentOut] = []
@@ -149,6 +169,8 @@ async def collect_payments(
         .outerjoin(ScheduleOccurrence, ScheduleOccurrence.id == Invoice.schedule_occurrence_id)
         .where(Invoice.tenant_id == tenant_id, Invoice.status == "issued", Invoice.total_cents - Invoice.amount_paid_cents > 0)
     )
+    if scope is not None:
+        inv_stmt = scope_documents(inv_stmt, Invoice, scope)
     if customer_id:
         inv_stmt = inv_stmt.where(Invoice.customer_id == customer_id)
     if schedule_id:
@@ -173,6 +195,8 @@ async def collect_payments(
         .join(Customer, Customer.id == PaymentSchedule.customer_id)
         .where(ScheduleOccurrence.tenant_id == tenant_id, ScheduleOccurrence.status == "expected", PaymentSchedule.status == "active")
     )
+    if scope is not None:
+        occ_stmt = scope_documents(occ_stmt, PaymentSchedule, scope)
     if customer_id:
         occ_stmt = occ_stmt.where(PaymentSchedule.customer_id == customer_id)
     if schedule_id:
@@ -203,13 +227,13 @@ async def upcoming_payments(
     date_to: date | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, _ = await _ctx(db, current_user)
     today = notif.tenant_today(tenant)
     rows = await collect_payments(db, tenant.id, today, customer_id=customer_id, schedule_id=schedule_id,
-                                  date_from=date_from, date_to=date_to)
+                                  date_from=date_from, date_to=date_to, scope=current_user)
     horizon = today + timedelta(days=window_days)
     rows = [r for r in rows if r.status == "overdue" or date_to is not None or r.due_date <= horizon]
     if status_filter != "all":
@@ -223,12 +247,12 @@ async def overdue_payments(
     schedule_id: uuid.UUID | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, _ = await _ctx(db, current_user)
     today = notif.tenant_today(tenant)
-    rows = [r for r in await collect_payments(db, tenant.id, today, customer_id=customer_id, schedule_id=schedule_id)
+    rows = [r for r in await collect_payments(db, tenant.id, today, customer_id=customer_id, schedule_id=schedule_id, scope=current_user)
             if r.status == "overdue"]
     rows.sort(key=lambda r: -r.days_overdue)
     return Page[UpcomingPaymentOut](items=rows[offset: offset + limit], total=len(rows), limit=limit, offset=offset)
@@ -296,7 +320,7 @@ def _period_range(period: str, today: date) -> tuple[date | None, date]:
 @router.get("/dashboard/summary", response_model=DashboardSummary)
 async def dashboard_summary(
     period: str = Query(default="this_month"),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     """Period-bound figures (invoiced, received) are kept apart from point-in-time ones
@@ -309,25 +333,28 @@ async def dashboard_summary(
     inv_conds = [Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.issue_date <= end]
     if start:
         inv_conds.append(Invoice.issue_date >= start)
-    for cur, amount in (await db.execute(select(Invoice.currency, func.sum(Invoice.total_cents)).where(*inv_conds).group_by(Invoice.currency))).all():
+    inv_q = scope_documents(select(Invoice.currency, func.sum(Invoice.total_cents)).where(*inv_conds), Invoice, current_user)
+    for cur, amount in (await db.execute(inv_q.group_by(Invoice.currency))).all():
         totals[cur].invoiced_cents = int(amount or 0)
 
     rc_conds = [Receipt.tenant_id == tenant.id, Receipt.status == "issued", Receipt.paid_at <= end]
     if start:
         rc_conds.append(Receipt.paid_at >= start)
-    for cur, amount in (await db.execute(select(Receipt.currency, func.sum(Receipt.amount_cents)).where(*rc_conds).group_by(Receipt.currency))).all():
+    rc_q = scope_documents(select(Receipt.currency, func.sum(Receipt.amount_cents)).where(*rc_conds), Receipt, current_user)
+    for cur, amount in (await db.execute(rc_q.group_by(Receipt.currency))).all():
         totals[cur].received_cents = int(amount or 0)
 
     ip_conds = [InvoicePayment.tenant_id == tenant.id, InvoicePayment.paid_at <= end]
     if start:
         ip_conds.append(InvoicePayment.paid_at >= start)
-    for cur, amount in (await db.execute(
+    ip_q = scope_documents(
         select(Invoice.currency, func.sum(InvoicePayment.amount_cents)).join(Invoice, Invoice.id == InvoicePayment.invoice_id)
-        .where(*ip_conds).group_by(Invoice.currency)
-    )).all():
+        .where(*ip_conds), Invoice, current_user,
+    )
+    for cur, amount in (await db.execute(ip_q.group_by(Invoice.currency))).all():
         totals[cur].received_on_invoices_cents = int(amount or 0)
 
-    for row in await collect_payments(db, tenant.id, today):
+    for row in await collect_payments(db, tenant.id, today, scope=current_user):
         t = totals[row.currency]
         if row.kind == "invoice":
             t.outstanding_cents += row.amount_cents
@@ -344,23 +371,26 @@ async def dashboard_summary(
             t.upcoming_30_cents += row.amount_cents
             t.upcoming_30_count += 1
 
-    for cur, amount, count in (await db.execute(
+    q_q = scope_documents(
         select(Quotation.currency, func.sum(Quotation.total_cents), func.count()).where(
             Quotation.tenant_id == tenant.id, Quotation.status.in_(("sent", "viewed")), Quotation.valid_until >= today
-        ).group_by(Quotation.currency)
-    )).all():
+        ), Quotation, current_user,
+    )
+    for cur, amount, count in (await db.execute(q_q.group_by(Quotation.currency))).all():
         totals[cur].pending_quotations_cents = int(amount or 0)
         totals[cur].pending_quotations_count = int(count or 0)
 
     totals.setdefault(tenant.default_currency, CurrencyTotals())
 
     recent = (await db.execute(
-        select(Receipt, Customer.name).join(Customer, Customer.id == Receipt.customer_id)
-        .where(Receipt.tenant_id == tenant.id).order_by(Receipt.created_at.desc()).limit(8)
+        scope_documents(select(Receipt, Customer.name).join(Customer, Customer.id == Receipt.customer_id), Receipt, current_user)
+        .order_by(Receipt.created_at.desc()).limit(8)
     )).all()
-    activity = (await db.execute(
-        select(AuditLog).where(AuditLog.tenant_id == tenant.id).order_by(AuditLog.created_at.desc()).limit(12)
-    )).scalars().all()
+    # Business-wide activity is for managers; staff see their own.
+    activity_q = select(AuditLog).where(AuditLog.tenant_id == tenant.id)
+    if not current_user.is_manager:
+        activity_q = activity_q.where(AuditLog.actor_user_id == current_user.id)
+    activity = (await db.execute(activity_q.order_by(AuditLog.created_at.desc()).limit(12))).scalars().all()
 
     return DashboardSummary(
         period=period, period_start=start, period_end=end, as_of=today, default_currency=tenant.default_currency,

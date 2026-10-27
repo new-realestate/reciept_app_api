@@ -401,3 +401,187 @@ ALTER TABLE quotations DROP CONSTRAINT quotations_created_by_user_id_fkey,
     ADD CONSTRAINT quotations_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE payment_schedules DROP CONSTRAINT payment_schedules_created_by_user_id_fkey,
     ADD CONSTRAINT payment_schedules_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- ---------------------------------------------------------------------------
+-- 0005: staff management and business-owned properties
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE users ADD COLUMN phone TEXT;
+ALTER TABLE users ADD COLUMN permissions JSONB;            -- staff permission flags; NULL = default staff set
+ALTER TABLE users ADD COLUMN deactivated_at TIMESTAMPTZ;   -- set by the business owner/admin
+ALTER TABLE users ADD COLUMN deactivated_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE TABLE properties (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name                TEXT NOT NULL,
+    property_type       VARCHAR(16) NOT NULL DEFAULT 'residential',
+    address             TEXT,
+    location            TEXT,
+    description         TEXT,
+    status              VARCHAR(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'archived')),
+    created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_properties_tenant_id UNIQUE (tenant_id, id)
+);
+
+CREATE TABLE property_units (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    property_id         UUID NOT NULL,
+    label               TEXT NOT NULL,
+    unit_type           VARCHAR(16) NOT NULL DEFAULT 'apartment',
+    status              VARCHAR(16) NOT NULL DEFAULT 'active',
+    default_rent_cents  BIGINT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_units_property_label UNIQUE (property_id, label),
+    CONSTRAINT uq_units_tenant_id UNIQUE (tenant_id, id),
+    CONSTRAINT uq_units_property_id UNIQUE (property_id, id),
+    CONSTRAINT fk_units_property FOREIGN KEY (tenant_id, property_id) REFERENCES properties(tenant_id, id) ON DELETE CASCADE
+);
+
+-- Revoking sets revoked_at; rows are history and are never deleted.
+CREATE TABLE property_staff_assignments (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    property_id         UUID NOT NULL,
+    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    assigned_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    assigned_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+    revoked_at          TIMESTAMPTZ,
+    CONSTRAINT fk_assignments_property FOREIGN KEY (tenant_id, property_id) REFERENCES properties(tenant_id, id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX uq_assignments_active ON property_staff_assignments(property_id, user_id) WHERE revoked_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- 0006: customer profiles, renters (shown as tenants in the portal) and
+--       tenancies, KYC, optional property context on documents
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE customers ADD COLUMN phone_normalized TEXT;  -- E.164, for duplicate matching
+ALTER TABLE customers ADD COLUMN customer_type VARCHAR(16) NOT NULL DEFAULT 'individual';
+ALTER TABLE customers ADD COLUMN legal_name TEXT;
+ALTER TABLE customers ADD COLUMN billing_address TEXT;
+ALTER TABLE customers ADD COLUMN tax_identification_number TEXT;
+ALTER TABLE customers ADD COLUMN notes TEXT;
+ALTER TABLE customers ADD COLUMN contact_preference VARCHAR(16);
+ALTER TABLE customers ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'active';
+ALTER TABLE customers ADD CONSTRAINT uq_customers_tenant_id UNIQUE (tenant_id, id);
+CREATE INDEX idx_customers_tenant_phone_norm ON customers(tenant_id, phone_normalized);
+
+-- One renter profile per customer; contact details live on the customer.
+CREATE TABLE renters (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    customer_id         UUID NOT NULL,
+    status              VARCHAR(16) NOT NULL DEFAULT 'active',  -- active | former | archived
+    occupation          TEXT,
+    employer            TEXT,
+    notes               TEXT,
+    created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_renters_tenant_id UNIQUE (tenant_id, id),
+    CONSTRAINT uq_renters_customer UNIQUE (customer_id),
+    CONSTRAINT fk_renters_customer FOREIGN KEY (tenant_id, customer_id) REFERENCES customers(tenant_id, id) ON DELETE RESTRICT
+);
+
+CREATE TABLE tenancies (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    renter_id           UUID NOT NULL,
+    property_id         UUID NOT NULL,
+    unit_id             UUID,
+    reference           TEXT NOT NULL,            -- TEN-YYYY-NNNNNN
+    start_date          DATE NOT NULL,
+    end_date            DATE,
+    rent_amount_cents   BIGINT NOT NULL,
+    currency            VARCHAR(3) NOT NULL,
+    rent_frequency      VARCHAR(16) NOT NULL DEFAULT 'monthly',
+    deposit_cents       BIGINT NOT NULL DEFAULT 0,
+    status              VARCHAR(16) NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'ended', 'terminated')),
+    notes               TEXT,
+    created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+    ended_at            TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_tenancies_tenant_id UNIQUE (tenant_id, id),
+    CONSTRAINT uq_tenancies_reference UNIQUE (tenant_id, reference),
+    CONSTRAINT chk_tenancies_dates CHECK (end_date IS NULL OR end_date >= start_date),
+    CONSTRAINT fk_tenancies_renter FOREIGN KEY (tenant_id, renter_id) REFERENCES renters(tenant_id, id) ON DELETE RESTRICT,
+    CONSTRAINT fk_tenancies_property FOREIGN KEY (tenant_id, property_id) REFERENCES properties(tenant_id, id) ON DELETE RESTRICT,
+    CONSTRAINT fk_tenancies_unit FOREIGN KEY (property_id, unit_id) REFERENCES property_units(property_id, id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX uq_tenancies_active_unit ON tenancies(unit_id) WHERE status = 'active' AND unit_id IS NOT NULL;
+
+-- Optional property context on documents (NULL = general business transaction).
+-- Repeated for receipts, invoices, quotations and payment_schedules:
+--   property_id UUID, unit_id UUID, tenancy_id UUID
+--   FOREIGN KEY (tenant_id, property_id) REFERENCES properties(tenant_id, id)
+--   FOREIGN KEY (tenant_id, unit_id)     REFERENCES property_units(tenant_id, id)
+--   FOREIGN KEY (tenant_id, tenancy_id)  REFERENCES tenancies(tenant_id, id)
+
+ALTER TABLE receipts ADD COLUMN idempotency_key VARCHAR(128);
+ALTER TABLE receipts ADD CONSTRAINT uq_receipts_idempotency UNIQUE (tenant_id, idempotency_key);
+-- Receipt numbers now come from document_counters (kind = receipt), seeded from the highest existing number.
+
+CREATE TABLE kyc_profiles (
+    id                              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id                       UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id                         UUID REFERENCES users(id) ON DELETE CASCADE,     -- staff subject
+    renter_id                       UUID REFERENCES renters(id) ON DELETE CASCADE,   -- renter subject
+    legal_name                      TEXT,
+    date_of_birth                   DATE,
+    residential_address             TEXT,
+    id_document_type                VARCHAR(24),
+    id_number_encrypted             TEXT,          -- Fernet ciphertext (KYC_ENCRYPTION_KEY)
+    id_number_last4                 VARCHAR(8),    -- for masked display only
+    id_expiry_date                  DATE,
+    emergency_contact_name          TEXT,
+    emergency_contact_phone         TEXT,
+    emergency_contact_relationship  TEXT,
+    staff_reference                 TEXT,
+    status                          VARCHAR(24) NOT NULL DEFAULT 'not_submitted',
+    verification_method             VARCHAR(16) NOT NULL DEFAULT 'manual',
+    submitted_at                    TIMESTAMPTZ,
+    submitted_by_user_id            UUID REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at                     TIMESTAMPTZ,
+    reviewed_by_user_id             UUID REFERENCES users(id) ON DELETE SET NULL,
+    review_note                     TEXT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_kyc_one_subject CHECK ((user_id IS NULL) <> (renter_id IS NULL)),
+    CONSTRAINT uq_kyc_user UNIQUE (user_id),
+    CONSTRAINT uq_kyc_renter UNIQUE (renter_id)
+);
+
+-- Files live under the private storage prefix (never served by /static).
+CREATE TABLE kyc_documents (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    profile_id          UUID NOT NULL REFERENCES kyc_profiles(id) ON DELETE CASCADE,
+    kind                VARCHAR(24) NOT NULL,
+    storage_key         TEXT NOT NULL,
+    content_type        VARCHAR(64) NOT NULL,
+    size_bytes          BIGINT NOT NULL,
+    sha256              VARCHAR(64) NOT NULL,
+    original_filename   TEXT,
+    uploaded_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at          TIMESTAMPTZ,
+    deleted_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE kyc_reviews (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id           UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    profile_id          UUID NOT NULL REFERENCES kyc_profiles(id) ON DELETE CASCADE,
+    decision            VARCHAR(24) NOT NULL,     -- approved | rejected | requires_correction
+    note                TEXT,
+    reviewer_user_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);

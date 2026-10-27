@@ -31,10 +31,15 @@ async def create_receipt_record(
     paid_at: date,
     balance_cents: int = 0,
     corrects_receipt_id: uuid.UUID | None = None,
+    property_id: uuid.UUID | None = None,
+    unit_id: uuid.UUID | None = None,
+    tenancy_id: uuid.UUID | None = None,
+    idempotency_key: str | None = None,
 ) -> Receipt:
     """Allocates the next reference number, inserts the receipt, renders and stores its PDF.
 
-    Does not commit; the caller owns the transaction.
+    Does not commit; the caller owns the transaction. The property context is optional
+    and must already be validated (app/core/access.py validate_doc_context).
     """
     currency = currency or tenant.default_currency
     reference_number = await next_reference_number(db, tenant.id)
@@ -55,6 +60,10 @@ async def create_receipt_record(
         issuer_printed_name=user.full_name,
         signature_image_url=user.signature_image_url,
         corrects_receipt_id=corrects_receipt_id,
+        property_id=property_id,
+        unit_id=unit_id,
+        tenancy_id=tenancy_id,
+        idempotency_key=idempotency_key,
     )
     db.add(receipt)
     await db.flush()
@@ -69,5 +78,6 @@ async def create_receipt_record(
         action="receipt.created",
         entity_type="receipt",
         entity_id=receipt.id,
+        metadata={"property_id": str(property_id)} if property_id else None,
     )
     return receipt

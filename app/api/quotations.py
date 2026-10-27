@@ -7,9 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.invoices import _ctx
 from app.api.invoices import _detail as _invoice_detail
+from app.core.access import (
+    AccessScope,
+    Perm,
+    ensure_document_visible,
+    get_scope,
+    require_manager_scope,
+    require_perm,
+    scope_documents,
+    validate_doc_context,
+)
 from app.core.audit import record_audit_event
-from app.core.deps import CurrentUser, get_current_user
-from app.core.permissions import require_manager
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.notification import NotificationEvent
@@ -38,14 +46,26 @@ async def _out(db: AsyncSession, tenant, q: Quotation) -> QuotationOut:
     return svc.serialize_quotation(q, name, notif.tenant_today(tenant), converted_invoice_id=inv.id if inv else None)
 
 
+async def _get_quotation(db: AsyncSession, scope: AccessScope, quotation_id: uuid.UUID, *, lock: bool = False) -> Quotation:
+    quotation = await svc.get_quotation(db, scope.tenant_id, quotation_id, lock=lock)
+    return ensure_document_visible(scope, quotation, "Quotation")
+
+
 @router.post("", response_model=QuotationOut, status_code=status.HTTP_201_CREATED)
-async def create_quotation(payload: QuotationCreate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def create_quotation(payload: QuotationCreate, current_user: AccessScope = Depends(require_perm(Perm.quotations_issue)), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
     customer = await get_or_create_customer(
         db, tenant.id, customer_id=payload.customer_id, name=payload.customer_name,
         email=payload.customer_email, phone=payload.customer_phone,
     )
-    q = await svc.create_draft(db, tenant=tenant, user=user, customer=customer, payload=payload)
+    ctx = await validate_doc_context(
+        db, current_user, property_id=payload.property_id, unit_id=payload.unit_id, tenancy_id=payload.tenancy_id,
+        customer_id=customer.id,
+    )
+    q = await svc.create_draft(
+        db, tenant=tenant, user=user, customer=customer, payload=payload,
+        property_id=ctx.property_id, unit_id=ctx.unit_id, tenancy_id=ctx.tenancy_id,
+    )
     await db.commit()
     await db.refresh(q)
     return await _out(db, tenant, q)
@@ -58,9 +78,10 @@ async def list_quotations(
     date_from: date | None = None,
     date_to: date | None = None,
     q: str | None = None,
+    property_id: uuid.UUID | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, _ = await _ctx(db, current_user)
@@ -80,12 +101,16 @@ async def list_quotations(
             raise HTTPException(status_code=422, detail="Unknown status filter")
     if customer_id:
         conds.append(Quotation.customer_id == customer_id)
+    if property_id:
+        conds.append(Quotation.property_id == property_id)
     if date_from:
         conds.append(Quotation.issue_date >= date_from)
     if date_to:
         conds.append(Quotation.issue_date <= date_to)
 
-    base = select(Quotation, Customer.name).join(Customer, Customer.id == Quotation.customer_id).where(*conds)
+    base = scope_documents(
+        select(Quotation, Customer.name).join(Customer, Customer.id == Quotation.customer_id).where(*conds), Quotation, current_user
+    )
     if q:
         like = f"%{q}%"
         base = base.where(or_(Quotation.number.ilike(like), Quotation.title.ilike(like), Customer.name.ilike(like)))
@@ -96,17 +121,17 @@ async def list_quotations(
 
 
 @router.get("/{quotation_id}", response_model=QuotationOut)
-async def get_quotation(quotation_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_quotation(quotation_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
-    return await _out(db, tenant, await svc.get_quotation(db, tenant.id, quotation_id))
+    return await _out(db, tenant, await _get_quotation(db, current_user, quotation_id))
 
 
 @router.patch("/{quotation_id}", response_model=QuotationOut)
 async def update_quotation(
-    quotation_id: uuid.UUID, payload: QuotationUpdate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    quotation_id: uuid.UUID, payload: QuotationUpdate, current_user: AccessScope = Depends(require_perm(Perm.quotations_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id, lock=True)
+    q = await _get_quotation(db, current_user, quotation_id, lock=True)
     customer = None
     if payload.customer_id:
         customer = await get_or_create_customer(db, tenant.id, customer_id=payload.customer_id, name=None, email=None, phone=None)
@@ -120,12 +145,12 @@ async def update_quotation(
 async def send_quotation(
     quotation_id: uuid.UUID,
     payload: SendDocumentRequest,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.quotations_issue)),
     db: AsyncSession = Depends(get_db),
 ):
     """Issues (if still a draft) and delivers the quotation. Calling again re-sends the same quotation."""
     tenant, user = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id, lock=True)
+    q = await _get_quotation(db, current_user, quotation_id, lock=True)
     customer = (await db.execute(select(Customer).where(Customer.id == q.customer_id))).scalar_one()
     await svc.prepare_to_send(db, tenant=tenant, user=user, quotation=q, customer=customer)
     await db.commit()
@@ -139,9 +164,9 @@ async def send_quotation(
 
 
 @router.post("/{quotation_id}/cancel", response_model=QuotationOut)
-async def cancel_quotation(quotation_id: uuid.UUID, current_user: CurrentUser = Depends(require_manager), db: AsyncSession = Depends(get_db)):
+async def cancel_quotation(quotation_id: uuid.UUID, current_user: AccessScope = Depends(require_manager_scope), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id, lock=True)
+    q = await _get_quotation(db, current_user, quotation_id, lock=True)
     await svc.cancel_quotation(db, tenant=tenant, user=user, quotation=q)
     await db.commit()
     await db.refresh(q)
@@ -150,11 +175,11 @@ async def cancel_quotation(quotation_id: uuid.UUID, current_user: CurrentUser = 
 
 @router.post("/{quotation_id}/convert", response_model=InvoiceDetailOut, status_code=status.HTTP_201_CREATED)
 async def convert_quotation(
-    quotation_id: uuid.UUID, payload: ConvertQuotationRequest, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    quotation_id: uuid.UUID, payload: ConvertQuotationRequest, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     """Creates a draft invoice (or an issued one with issue_now) from an accepted quotation. Never creates a receipt."""
     tenant, user = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id, lock=True)  # serialises concurrent conversions
+    q = await _get_quotation(db, current_user, quotation_id, lock=True)  # serialises concurrent conversions
     customer = (await db.execute(select(Customer).where(Customer.id == q.customer_id))).scalar_one()
     invoice = await svc.convert_to_invoice(db, tenant=tenant, user=user, quotation=q, customer=customer, payload=payload)
     if payload.issue_now:
@@ -167,9 +192,9 @@ async def convert_quotation(
 
 
 @router.get("/{quotation_id}/pdf")
-async def quotation_pdf(quotation_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def quotation_pdf(quotation_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id)
+    q = await _get_quotation(db, current_user, quotation_id)
     customer = (await db.execute(select(Customer).where(Customer.id == q.customer_id))).scalar_one()
     pdf = quotation_pdf_bytes(q, tenant, customer, notif.tenant_today(tenant))
     name = q.number or "quotation-draft"
@@ -177,11 +202,11 @@ async def quotation_pdf(quotation_id: uuid.UUID, current_user: CurrentUser = Dep
 
 
 @router.post("/{quotation_id}/rotate-link", response_model=QuotationOut)
-async def rotate_quotation_link(quotation_id: uuid.UUID, current_user: CurrentUser = Depends(require_manager), db: AsyncSession = Depends(get_db)):
+async def rotate_quotation_link(quotation_id: uuid.UUID, current_user: AccessScope = Depends(require_manager_scope), db: AsyncSession = Depends(get_db)):
     from app.services.invoices import new_public_token
 
     tenant, user = await _ctx(db, current_user)
-    q = await svc.get_quotation(db, tenant.id, quotation_id, lock=True)
+    q = await _get_quotation(db, current_user, quotation_id, lock=True)
     if q.status == "draft":
         raise svc.conflict("Send the quotation before sharing a link")
     q.public_token = new_public_token()
@@ -194,8 +219,8 @@ async def rotate_quotation_link(quotation_id: uuid.UUID, current_user: CurrentUs
 
 
 @router.get("/{quotation_id}/notifications", response_model=list[NotificationEventOut])
-async def quotation_notifications(quotation_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    q = await svc.get_quotation(db, current_user.tenant_id, quotation_id)
+async def quotation_notifications(quotation_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    q = await _get_quotation(db, current_user, quotation_id)
     events = (
         await db.execute(
             select(NotificationEvent)
