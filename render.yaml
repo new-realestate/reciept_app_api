@@ -2,6 +2,9 @@ services:
   - type: web
     name: receipt-app
     runtime: docker
+    # Same region as the Neon database (aws-us-east-2, Ohio): each query is a network round
+    # trip, ~1 ms here versus ~50 ms from Render's default region (Oregon).
+    region: ohio
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
@@ -11,6 +14,8 @@ services:
       # production). Copy the values from `neon env pull` / the Neon console.
       - key: DATABASE_URL
         sync: false
+      # Used by the app and migrations when set (direct endpoint: prepared statements are
+      # cached, about half the round trips of the pooled endpoint). Set it.
       - key: DATABASE_URL_UNPOOLED
         sync: false
       - key: STORAGE_BACKEND

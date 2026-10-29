@@ -103,6 +103,7 @@ async def create_draft(
     lines: list[LineItemIn] | None = None, discount_percent: Decimal | None = None, discount_cents: int | None = None,
     notes: str | None = None, payment_instructions: str | None = None, reminders_enabled: bool = True,
     quotation_id: uuid.UUID | None = None, schedule_occurrence_id: uuid.UUID | None = None,
+    property_id: uuid.UUID | None = None, unit_id: uuid.UUID | None = None, tenancy_id: uuid.UUID | None = None,
 ) -> Invoice:
     if payload is not None:
         title, currency, issue_date, due_date = payload.title, payload.currency, payload.issue_date, payload.due_date
@@ -127,6 +128,9 @@ async def create_draft(
         reminders_enabled=reminders_enabled,
         quotation_id=quotation_id,
         schedule_occurrence_id=schedule_occurrence_id,
+        property_id=property_id,
+        unit_id=unit_id,
+        tenancy_id=tenancy_id,
         created_by_user_id=user.id,
     )
     apply_lines_and_totals(invoice, InvoiceLineItem, lines, discount_percent=discount_percent, discount_cents=discount_cents)
@@ -286,6 +290,9 @@ async def record_payment(
         payment_reference=payload.payment_reference,
         paid_at=payload.paid_at,
         balance_cents=remaining,
+        property_id=invoice.property_id,
+        unit_id=invoice.unit_id,
+        tenancy_id=invoice.tenancy_id,
     )
     payment = InvoicePayment(
         tenant_id=tenant.id,
@@ -324,6 +331,7 @@ def serialize_invoice(invoice: Invoice, customer_name: str | None, today: date, 
         outstanding_cents=outstanding_cents(invoice), days_overdue=days_overdue(invoice, today),
         notes=invoice.notes, payment_instructions=invoice.payment_instructions,
         reminders_enabled=invoice.reminders_enabled, quotation_id=invoice.quotation_id,
+        property_id=invoice.property_id, unit_id=invoice.unit_id, tenancy_id=invoice.tenancy_id,
         public_url=invoice_public_url(invoice), issued_at=invoice.issued_at, cancelled_at=invoice.cancelled_at,
         cancel_reason=invoice.cancel_reason, created_at=invoice.created_at,
         line_items=[LineItemOut.model_validate(li) for li in invoice.line_items],

@@ -6,11 +6,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.models.context import PropertyContextMixin, property_context_fks
 from app.models.types import JSONBType, UUIDType
 
 
-class PaymentSchedule(Base):
+class PaymentSchedule(PropertyContextMixin, Base):
     __tablename__ = "payment_schedules"
+    __table_args__ = property_context_fks("payment_schedules")
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(

@@ -28,7 +28,7 @@ async def _create_customer(client, headers, email="payer2@example.com", phone="+
 async def _create_receipt(client, headers, customer_id):
     response = await client.post(
         "/receipts",
-        json={
+        json={"payment_received_confirmed": True, 
             "customer_id": customer_id,
             "amount_cents": 30000,
             "reason": "Rent",

@@ -1,11 +1,12 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.models.context import PropertyContextMixin, property_context_fks
 from app.models.enums import PaymentMethodType, ReceiptStatus
 from app.models.types import PortableEnum, UUIDType
 
@@ -13,8 +14,13 @@ receipt_status_enum = PortableEnum(ReceiptStatus, name="receipt_status")
 payment_method_enum = PortableEnum(PaymentMethodType, name="payment_method_type")
 
 
-class Receipt(Base):
+class Receipt(PropertyContextMixin, Base):
     __tablename__ = "receipts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "reference_number", name="uq_receipts_tenant_ref"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_receipts_idempotency"),
+        *property_context_fks("receipts"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUIDType(), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -46,4 +52,5 @@ class Receipt(Base):
 
     hosted_view_token: Mapped[str] = mapped_column(Text, nullable=False, default=lambda: uuid.uuid4().hex)
     pdf_url: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -18,9 +18,22 @@ import time
 import uuid
 from typing import Any
 
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+# Per-request count of SQL statements, shown in the access log so N+1 query patterns stand out.
+sql_count_var: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar("sql_count", default=None)
+
+
+def _count_statement(*_args, **_kwargs) -> None:
+    counter = sql_count_var.get()
+    if counter is not None:
+        counter[0] += 1
+
+
+event.listen(Engine, "before_cursor_execute", _count_statement)
 
 REDACTED = "[redacted]"
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -119,6 +132,8 @@ class RequestLogMiddleware:
         incoming = next((v.decode("latin-1") for k, v in scope["headers"] if k == b"x-request-id"), "")
         request_id = incoming if _SAFE_ID.match(incoming) else uuid.uuid4().hex[:16]
         token = request_id_var.set(request_id)
+        sql_counter = [0]
+        sql_token = sql_count_var.set(sql_counter)
         started = time.perf_counter()
         status_holder = {"status": 500}
 
@@ -141,7 +156,9 @@ class RequestLogMiddleware:
             level = logging.WARNING if status_holder["status"] >= 500 else logging.INFO
             access_logger.log(
                 level,
-                "%s %s -> %d in %.0fms (client=%s)",
-                scope["method"], scope["path"], status_holder["status"], elapsed_ms, client[0] if client else "-",
+                "%s %s -> %d in %.0fms, %d sql (client=%s)",
+                scope["method"], scope["path"], status_holder["status"], elapsed_ms, sql_counter[0],
+                client[0] if client else "-",
             )
+            sql_count_var.reset(sql_token)
             request_id_var.reset(token)

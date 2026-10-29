@@ -7,7 +7,7 @@ from sqlalchemy.sql import func
 
 from app.db.session import Base
 from app.models.enums import UserRole
-from app.models.types import CIText, PortableEnum, UUIDType
+from app.models.types import CIText, JSONBType, PortableEnum, UUIDType
 
 user_role_enum = PortableEnum(UserRole, name="user_role")
 
@@ -37,6 +37,14 @@ class User(Base):
     password_reset_token: Mapped[str | None] = mapped_column(Text)
     password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    phone: Mapped[str | None] = mapped_column(Text)
+    # Staff permission flags (see app/core/access.py). NULL means the default staff set;
+    # owners and admins hold every permission regardless.
+    permissions: Mapped[list | None] = mapped_column(JSONBType())
+    # Set by the business's owner/admin; a deactivated member can't log in or use the API.
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deactivated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType(), ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

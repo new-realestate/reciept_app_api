@@ -88,6 +88,8 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if user.suspended_at is not None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been suspended")
+    if user.deactivated_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been deactivated by your business")
     if not user.is_superadmin:
         tenant = await db.get(Tenant, user.tenant_id)
         if tenant is None or tenant.deleted_at is not None or tenant.suspended_at is not None:
@@ -131,11 +133,10 @@ async def confirm_password_reset(payload: PasswordResetConfirm, db: AsyncSession
     result = await db.execute(select(User).where(User.password_reset_token == payload.token))
     user = result.scalar_one_or_none()
 
-    if (
-        user is None
-        or user.password_reset_expires_at is None
-        or user.password_reset_expires_at < datetime.now(timezone.utc)
-    ):
+    expires_at = user.password_reset_expires_at if user is not None else None
+    if expires_at is not None and expires_at.tzinfo is None:  # SQLite returns naive UTC datetimes
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if user is None or expires_at is None or expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
 
     user.password_hash = hash_password(payload.new_password)

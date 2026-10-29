@@ -84,6 +84,57 @@ See `.env.example`. All secrets are read via `pydantic-settings`; nothing is har
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | SMS delivery |
 | `APP_BASE_URL` | Used to build hosted receipt links (`/r/{token}`) and email/reset links |
 | `STORAGE_DIR` | Local disk path for uploaded logos/signatures and generated PDFs (swap for S3/GCS later without changing callers — see `app/services/pdf.py`) |
+| `KYC_ENCRYPTION_KEY` | Fernet key that encrypts KYC identity-document numbers. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Keep it secret and back it up: numbers stored with a lost key can't be recovered. KYC endpoints that store or reveal an ID number return 503 while it is unset |
+
+## Properties, staff, tenants and KYC
+
+Roles, permission flags, data scoping and the KYC rules are in [docs/roles-and-permissions.md](docs/roles-and-permissions.md).
+
+```bash
+alembic upgrade head   # applies 0005 (staff, properties) and 0006 (customer profiles, renters, tenancies, KYC)
+python scripts/report_unmapped.py   # read-only: existing records you may want to link to a property by hand
+```
+
+Both migrations are additive. Existing documents stay general transactions (no property is
+inferred), customer phone numbers are backfilled to E.164 where they parse, and receipt numbering
+moves to the per-business counter, starting after the highest number already issued.
+
+## Performance and hosting region
+
+Every database query is a network round trip, so the API is fast when it sits next to the
+database and makes few queries per request:
+
+- The app connects through `DATABASE_URL_UNPOOLED` (Neon's direct endpoint) when it's set, so
+  asyncpg can cache prepared statements. It keeps its own small pool (5 + 5 overflow), recycles
+  connections every 4 minutes (Neon suspends idle compute after 5) and pings each connection
+  before use (`DATABASE_POOL_PRE_PING`, on by default; set `false` for local dev far from the
+  database to save a round trip per request).
+- The access log shows the SQL statement count per request
+  (`GET /receipts -> 200 in 12ms, 2 sql`), and `tests/test_query_budget.py` fails if common
+  endpoints start issuing more queries.
+- `render.yaml` pins the service to `region: ohio`, the same AWS region as the Neon database.
+
+### Moving an existing Render service to Ohio
+
+Render can't change a service's region in place, so create a new one and switch over:
+
+1. **Create the service.** In Render, create a new Blueprint (or Web Service) from this repo with
+   region **Ohio**. `render.yaml` already sets it.
+2. **Copy the environment variables** from the old service, keeping the **same values**:
+   `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `AWS_*`, `GMAIL_*`, `TWILIO_*`, `SUPERADMIN_*`,
+   `CORS_ALLOW_ORIGINS_RAW`, `KYC_ENCRYPTION_KEY`, and **`JWT_SECRET`**. Keeping `JWT_SECRET`
+   keeps everyone signed in; a new `KYC_ENCRYPTION_KEY` would make stored ID numbers
+   unreadable.
+3. **Deploy.** Migrations run in the pre-deploy step; there are no schema changes in this move.
+4. **Point the frontend and links at the new URL.** Set the portal's `VITE_API_BASE_URL` (on
+   Vercel) and this service's `APP_BASE_URL` to the new URL, then redeploy the portal.
+   - Receipt PDFs and hosted links already sent embed the old `APP_BASE_URL`. To keep them
+     working, use a custom domain (move it to the new service), or keep the old service
+     running until those links no longer matter.
+5. **Check, then remove the old service.** Check `/health` and a few portal pages, then
+   suspend and delete the old Oregon service.
+   - Run only one service with `SCHEDULER_ENABLED=true` at a time, so reminders aren't sent
+     twice during the overlap.
 
 ## Core flow
 

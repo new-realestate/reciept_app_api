@@ -41,7 +41,10 @@ async def get_quotation(db: AsyncSession, tenant_id: uuid.UUID, quotation_id: uu
     return quotation
 
 
-async def create_draft(db: AsyncSession, *, tenant: Tenant, user: User, customer: Customer, payload: QuotationCreate) -> Quotation:
+async def create_draft(
+    db: AsyncSession, *, tenant: Tenant, user: User, customer: Customer, payload: QuotationCreate,
+    property_id: uuid.UUID | None = None, unit_id: uuid.UUID | None = None, tenancy_id: uuid.UUID | None = None,
+) -> Quotation:
     issue_date = payload.issue_date or tenant_today(tenant)
     if payload.valid_until < issue_date:
         raise unprocessable("The validity date cannot be before the issue date")
@@ -57,6 +60,9 @@ async def create_draft(db: AsyncSession, *, tenant: Tenant, user: User, customer
         terms=payload.terms,
         notes=payload.notes,
         internal_notes=payload.internal_notes,
+        property_id=property_id,
+        unit_id=unit_id,
+        tenancy_id=tenancy_id,
         created_by_user_id=user.id,
     )
     apply_lines_and_totals(q, QuotationLineItem, payload.line_items,
@@ -233,6 +239,7 @@ async def convert_to_invoice(
         currency=quotation.currency, issue_date=payload.issue_date, due_date=payload.due_date, lines=lines,
         discount_percent=pct, discount_cents=None if pct is not None else snap.get("discount_cents"),
         notes=snap.get("notes"), payment_instructions=payload.payment_instructions, quotation_id=quotation.id,
+        property_id=quotation.property_id, unit_id=quotation.unit_id, tenancy_id=quotation.tenancy_id,
     )
     await record_audit_event(db, tenant_id=tenant.id, actor_user_id=user.id, action="quotation.converted",
                              entity_type="quotation", entity_id=quotation.id, metadata={"invoice_id": str(invoice.id)})
@@ -254,4 +261,5 @@ def serialize_quotation(q: Quotation, customer_name: str | None, today: date, *,
         public_url=quotation_public_url(q), sent_at=q.sent_at, viewed_at=q.viewed_at, responded_at=q.responded_at,
         accepted_name=q.accepted_name, response_comment=q.response_comment, converted_invoice_id=converted_invoice_id,
         created_at=q.created_at, line_items=[LineItemOut.model_validate(li) for li in q.line_items],
+        property_id=q.property_id, unit_id=q.unit_id, tenancy_id=q.tenancy_id,
     )

@@ -18,8 +18,16 @@ if settings.database_is_pooled:
         "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
     }
 
-# pool_pre_ping/pool_recycle: Neon scales idle compute to zero, which drops connections.
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, pool_recycle=300, connect_args=connect_args)
+# Neon suspends idle compute after 5 minutes, which drops its connections: recycle them
+# before that, and (by default) ping each one before use to catch any other drop.
+engine = create_async_engine(
+    settings.app_database_url,
+    pool_size=5,
+    max_overflow=5,
+    pool_recycle=240,
+    pool_pre_ping=settings.database_pool_pre_ping,
+    connect_args=connect_args,
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

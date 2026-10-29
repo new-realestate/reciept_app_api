@@ -76,6 +76,7 @@ async def auto_invoice(db: AsyncSession, tenants: dict, now: datetime) -> int:
                     issue_date=min(today, occ.due_date), due_date=occ.due_date,
                     lines=[LineItemIn(description=schedule.description, quantity=Decimal(1), unit_price_cents=occ.amount_cents)],
                     reminders_enabled=schedule.reminders_enabled, schedule_occurrence_id=occ.id,
+                    property_id=schedule.property_id, unit_id=schedule.unit_id, tenancy_id=schedule.tenancy_id,
                 )
                 await invoice_svc.issue_invoice(db, tenant=tenant, user=user, invoice=invoice, customer=customer)
                 occ.status = "invoiced"

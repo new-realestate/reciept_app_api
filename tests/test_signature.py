@@ -19,7 +19,7 @@ async def _upload(client, headers, data=PNG, content_type="image/png"):
 async def _issue_receipt(client, headers):
     resp = await client.post(
         "/receipts",
-        json={"customer_name": "John Payer", "customer_email": "payer@example.com", "amount_cents": 150000,
+        json={"payment_received_confirmed": True, "customer_name": "John Payer", "customer_email": "payer@example.com", "amount_cents": 150000,
               "currency": "UGX", "reason": "Rent", "payment_method": "cash", "paid_at": "2026-07-01"},
         headers=headers,
     )

@@ -6,7 +6,24 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from app.api import admin, audit, auth, customers, invoices, public_docs, quotations, receipts, reminders, schedules, tenant, webhooks
+from app.api import (
+    admin,
+    audit,
+    auth,
+    customers,
+    invoices,
+    kyc,
+    properties,
+    public_docs,
+    quotations,
+    receipts,
+    reminders,
+    renters,
+    schedules,
+    team,
+    tenant,
+    webhooks,
+)
 from app.core.config import get_settings
 from app.core.logging import RequestLogMiddleware, setup_logging
 from app.db.seed import seed_default_users, seed_superadmin
@@ -49,6 +66,9 @@ app.add_middleware(
 @app.get("/static/{key:path}", include_in_schema=False)
 async def static_file(key: str):
     # Uploads and generated PDFs, served from app/services/storage.py (Neon Object Storage or local disk).
+    # Private objects (KYC documents) are never served here.
+    if not storage.is_public_key(key):
+        raise HTTPException(status_code=404, detail="Not found")
     data = await asyncio.to_thread(storage.get, key)
     if data is None:
         raise HTTPException(status_code=404, detail="Not found")
@@ -69,6 +89,10 @@ app.include_router(reminders.router)
 app.include_router(audit.router)
 app.include_router(public_docs.router)
 app.include_router(admin.router)
+app.include_router(team.router)
+app.include_router(properties.router)
+app.include_router(renters.router)
+app.include_router(kyc.router)
 
 
 @app.exception_handler(HTTPException)

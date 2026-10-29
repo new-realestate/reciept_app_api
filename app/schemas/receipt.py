@@ -4,9 +4,10 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field, model_validator
 
 from app.models.enums import DeliveryChannel, DeliveryStatus, PaymentMethodType, ReceiptStatus
+from app.schemas.documents import PropertyContextIn
 
 
-class ReceiptCreate(BaseModel):
+class ReceiptCreate(PropertyContextIn):
     customer_id: uuid.UUID | None = None
 
     # Inline customer details — used to create-or-reuse a customer when
@@ -23,9 +24,14 @@ class ReceiptCreate(BaseModel):
     paid_at: date
     balance_cents: int = Field(default=0, ge=0)
     corrects_receipt_id: uuid.UUID | None = None
+    # A receipt confirms money that has already been received; the issuer must say so explicitly.
+    payment_received_confirmed: bool = False
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def check_customer(self):
+        if not self.payment_received_confirmed:
+            raise ValueError("Confirm that this payment has already been received (payment_received_confirmed: true)")
         if not self.customer_id and not self.customer_name:
             raise ValueError("Provide either customer_id or customer_name (+ email/phone)")
         if not self.customer_id and not (self.customer_email or self.customer_phone):
@@ -66,6 +72,10 @@ class ReceiptOut(BaseModel):
     hosted_view_token: str
     pdf_url: str | None
     created_at: datetime
+    property_id: uuid.UUID | None = None
+    unit_id: uuid.UUID | None = None
+    tenancy_id: uuid.UUID | None = None
+    issued_by_user_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 

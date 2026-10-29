@@ -39,7 +39,7 @@ async def _invoice_by_token(db: AsyncSession, token: str):
     ).scalar_one_or_none()
     if invoice is None:
         raise _not_found()
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == invoice.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, invoice.tenant_id)
     customer = (await db.execute(select(Customer).where(Customer.id == invoice.customer_id))).scalar_one()
     payments = (
         await db.execute(select(InvoicePayment).where(InvoicePayment.invoice_id == invoice.id).order_by(InvoicePayment.created_at))
@@ -67,7 +67,7 @@ async def _quotation_context(db: AsyncSession, token: str):
     quotation = await qsvc.get_by_token(db, token)
     if quotation is None or quotation.status == "draft":
         raise _not_found()
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == quotation.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, quotation.tenant_id)
     customer = (await db.execute(select(Customer).where(Customer.id == quotation.customer_id))).scalar_one()
     return quotation, tenant, customer
 
@@ -102,7 +102,7 @@ async def _respond(token: str, db: AsyncSession, *, accept: bool, name: str | No
     quotation = await qsvc.get_by_token(db, token, lock=True)
     if quotation is None or quotation.status == "draft":
         raise _not_found()
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == quotation.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, quotation.tenant_id)
     try:
         await qsvc.respond(db, quotation, tenant=tenant, accept=accept, name=name, comment=comment)
     except HTTPException as exc:

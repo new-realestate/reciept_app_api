@@ -3,12 +3,22 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import (
+    AccessScope,
+    Perm,
+    ensure_document_visible,
+    get_scope,
+    require_manager_scope,
+    require_perm,
+    scope_documents,
+    validate_doc_context,
+)
 from app.core.audit import record_audit_event
-from app.core.deps import CurrentUser, get_current_user
-from app.core.permissions import require_manager
+from app.core.deps import CurrentUser
+from app.db.paging import paginate
 from app.db.session import get_db
 from app.models.customer import Customer
 from app.models.enums import DeliveryChannel
@@ -61,9 +71,14 @@ class PaymentRecordedOut(BaseModel):
 
 
 async def _ctx(db: AsyncSession, current_user: CurrentUser) -> tuple[Tenant, User]:
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
-    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
+    user = await db.get_one(User, current_user.id)
     return tenant, user
+
+
+async def _get_invoice(db: AsyncSession, scope: AccessScope, invoice_id: uuid.UUID, *, lock: bool = False) -> Invoice:
+    invoice = await svc.get_invoice(db, scope.tenant_id, invoice_id, lock=lock)
+    return ensure_document_visible(scope, invoice, "Invoice")
 
 
 async def _customer_name(db: AsyncSession, customer_id: uuid.UUID) -> str | None:
@@ -85,14 +100,21 @@ def _receipt_url(receipt: Receipt) -> str:
 
 @router.post("", response_model=InvoiceDetailOut, status_code=status.HTTP_201_CREATED)
 async def create_invoice(
-    payload: InvoiceCreate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    payload: InvoiceCreate, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
     customer = await get_or_create_customer(
         db, tenant.id, customer_id=payload.customer_id, name=payload.customer_name,
         email=payload.customer_email, phone=payload.customer_phone,
     )
-    invoice = await svc.create_draft(db, tenant=tenant, user=user, customer=customer, payload=payload)
+    ctx = await validate_doc_context(
+        db, current_user, property_id=payload.property_id, unit_id=payload.unit_id, tenancy_id=payload.tenancy_id,
+        customer_id=customer.id,
+    )
+    invoice = await svc.create_draft(
+        db, tenant=tenant, user=user, customer=customer, payload=payload,
+        property_id=ctx.property_id, unit_id=ctx.unit_id, tenancy_id=ctx.tenancy_id,
+    )
     if payload.issue_now:
         await svc.issue_invoice(db, tenant=tenant, user=user, invoice=invoice, customer=customer)
         await reminders.plan_invoice_reminders(db, tenant, invoice, customer)
@@ -108,12 +130,13 @@ async def list_invoices(
     date_from: date | None = None,
     date_to: date | None = None,
     q: str | None = Query(default=None, description="Invoice number, title or customer name"),
+    property_id: uuid.UUID | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(get_scope),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
     today = notif.tenant_today(tenant)
 
     conds = [Invoice.tenant_id == tenant.id]
@@ -136,37 +159,38 @@ async def list_invoices(
             raise HTTPException(status_code=422, detail="Unknown status filter")
     if customer_id:
         conds.append(Invoice.customer_id == customer_id)
+    if property_id:
+        conds.append(Invoice.property_id == property_id)
     if date_from:
         conds.append(Invoice.issue_date >= date_from)
     if date_to:
         conds.append(Invoice.issue_date <= date_to)
 
-    base = select(Invoice, Customer.name).join(Customer, Customer.id == Invoice.customer_id).where(*conds)
+    base = scope_documents(
+        select(Invoice, Customer.name).join(Customer, Customer.id == Invoice.customer_id).where(*conds), Invoice, current_user
+    )
     if q:
         like = f"%{q}%"
         base = base.where(or_(Invoice.number.ilike(like), Invoice.title.ilike(like), Customer.name.ilike(like)))
 
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (
-        await db.execute(base.order_by(Invoice.created_at.desc(), Invoice.id).limit(limit).offset(offset))
-    ).all()
+    rows, total = await paginate(db, base.order_by(Invoice.created_at.desc(), Invoice.id), limit=limit, offset=offset)
     items = [svc.serialize_invoice(inv, name, today) for inv, name in rows]
     return Page[InvoiceOut](items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{invoice_id}", response_model=InvoiceDetailOut)
-async def get_invoice(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_invoice(invoice_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id)
+    invoice = await _get_invoice(db, current_user, invoice_id)
     return await _detail(db, tenant, invoice)
 
 
 @router.patch("/{invoice_id}", response_model=InvoiceDetailOut)
 async def update_invoice(
-    invoice_id: uuid.UUID, payload: InvoiceUpdate, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID, payload: InvoiceUpdate, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     customer = None
     if payload.customer_id:
         customer = await get_or_create_customer(db, tenant.id, customer_id=payload.customer_id, name=None, email=None, phone=None)
@@ -180,11 +204,11 @@ async def update_invoice(
 async def issue_invoice(
     invoice_id: uuid.UUID,
     payload: IssueRequest | None = None,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     customer = (await db.execute(select(Customer).where(Customer.id == invoice.customer_id))).scalar_one()
     await svc.issue_invoice(db, tenant=tenant, user=user, invoice=invoice, customer=customer)
     await reminders.plan_invoice_reminders(db, tenant, invoice, customer)
@@ -203,11 +227,11 @@ async def issue_invoice(
 async def cancel_invoice(
     invoice_id: uuid.UUID,
     payload: CancelRequest | None = None,
-    current_user: CurrentUser = Depends(require_manager),
+    current_user: AccessScope = Depends(require_manager_scope),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     await svc.cancel_invoice(db, tenant=tenant, user=user, invoice=invoice, reason=payload.reason if payload else None)
     await notif.cancel_pending_events(db, subject_type="invoice", subject_id=invoice.id, reason="invoice cancelled")
     await schedules_svc.release_occurrence(db, invoice)
@@ -222,10 +246,11 @@ async def record_invoice_payment(
     payload: InvoicePaymentCreate,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=128),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: AccessScope = Depends(require_perm(Perm.invoices_record_payment)),
     db: AsyncSession = Depends(get_db),
 ):
     tenant, user = await _ctx(db, current_user)
+    await _get_invoice(db, current_user, invoice_id)  # 404 unless the caller may see this invoice
     invoice, payment, replayed = await svc.record_payment(
         db, tenant=tenant, user=user, invoice_id=invoice_id, payload=payload, idempotency_key=idempotency_key
     )
@@ -259,16 +284,16 @@ async def record_invoice_payment(
 
 
 @router.get("/{invoice_id}/payments", response_model=list[InvoicePaymentOut])
-async def list_invoice_payments(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    invoice = await svc.get_invoice(db, current_user.tenant_id, invoice_id)
+async def list_invoice_payments(invoice_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    invoice = await _get_invoice(db, current_user, invoice_id)
     rows = await db.execute(select(InvoicePayment).where(InvoicePayment.invoice_id == invoice.id).order_by(InvoicePayment.created_at))
     return rows.scalars().all()
 
 
 @router.get("/{invoice_id}/pdf")
-async def invoice_pdf(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def invoice_pdf(invoice_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     tenant, _ = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id)
+    invoice = await _get_invoice(db, current_user, invoice_id)
     customer = (await db.execute(select(Customer).where(Customer.id == invoice.customer_id))).scalar_one()
     payments = (await db.execute(select(InvoicePayment).where(InvoicePayment.invoice_id == invoice.id))).scalars().all()
     pdf = invoice_pdf_bytes(invoice, tenant, customer, list(payments), notif.tenant_today(tenant))
@@ -278,10 +303,10 @@ async def invoice_pdf(invoice_id: uuid.UUID, current_user: CurrentUser = Depends
 
 @router.post("/{invoice_id}/send", response_model=list[NotificationEventOut])
 async def send_invoice(
-    invoice_id: uuid.UUID, payload: SendDocumentRequest, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID, payload: SendDocumentRequest, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id)
+    invoice = await _get_invoice(db, current_user, invoice_id)
     if invoice.status != "issued":
         raise svc.conflict("Only issued invoices can be sent")
     if invoice.token_revoked_at:
@@ -298,11 +323,11 @@ async def send_invoice(
 
 @router.post("/{invoice_id}/remind", response_model=list[NotificationEventOut])
 async def remind_now(
-    invoice_id: uuid.UUID, payload: SendDocumentRequest, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID, payload: SendDocumentRequest, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     """Manual reminder. Only for invoices that still have a balance; limited to one per channel per hour."""
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id)
+    invoice = await _get_invoice(db, current_user, invoice_id)
     if invoice.status != "issued":
         raise svc.conflict("Reminders can only be sent for issued invoices")
     if invoice.total_cents - invoice.amount_paid_cents <= 0:
@@ -331,11 +356,11 @@ async def remind_now(
 
 @router.patch("/{invoice_id}/reminders", response_model=InvoiceDetailOut)
 async def update_invoice_reminders(
-    invoice_id: uuid.UUID, payload: InvoiceReminderSettings, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID, payload: InvoiceReminderSettings, current_user: AccessScope = Depends(require_perm(Perm.invoices_issue)), db: AsyncSession = Depends(get_db)
 ):
     """Enable/disable reminders for one invoice and/or override intervals; pending reminders are re-planned."""
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     if invoice.status in ("cancelled",):
         raise svc.conflict("Cancelled invoices have no reminders")
     data = payload.model_dump(exclude_unset=True, exclude_none=True)
@@ -358,9 +383,9 @@ async def update_invoice_reminders(
 
 
 @router.post("/{invoice_id}/rotate-link", response_model=InvoiceDetailOut)
-async def rotate_link(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(require_manager), db: AsyncSession = Depends(get_db)):
+async def rotate_link(invoice_id: uuid.UUID, current_user: AccessScope = Depends(require_manager_scope), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     await svc.rotate_public_link(db, tenant=tenant, user=user, invoice=invoice, revoke_only=False)
     await db.commit()
     await db.refresh(invoice)
@@ -368,9 +393,9 @@ async def rotate_link(invoice_id: uuid.UUID, current_user: CurrentUser = Depends
 
 
 @router.post("/{invoice_id}/revoke-link", response_model=InvoiceDetailOut)
-async def revoke_link(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(require_manager), db: AsyncSession = Depends(get_db)):
+async def revoke_link(invoice_id: uuid.UUID, current_user: AccessScope = Depends(require_manager_scope), db: AsyncSession = Depends(get_db)):
     tenant, user = await _ctx(db, current_user)
-    invoice = await svc.get_invoice(db, tenant.id, invoice_id, lock=True)
+    invoice = await _get_invoice(db, current_user, invoice_id, lock=True)
     await svc.rotate_public_link(db, tenant=tenant, user=user, invoice=invoice, revoke_only=True)
     await db.commit()
     await db.refresh(invoice)
@@ -378,8 +403,8 @@ async def revoke_link(invoice_id: uuid.UUID, current_user: CurrentUser = Depends
 
 
 @router.get("/{invoice_id}/notifications", response_model=list[NotificationEventOut])
-async def invoice_notifications(invoice_id: uuid.UUID, current_user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    invoice = await svc.get_invoice(db, current_user.tenant_id, invoice_id)
+async def invoice_notifications(invoice_id: uuid.UUID, current_user: AccessScope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    invoice = await _get_invoice(db, current_user, invoice_id)
     events = (
         await db.execute(
             select(NotificationEvent)

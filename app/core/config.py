@@ -37,9 +37,25 @@ class Settings(BaseSettings):
     def migration_database_url(self) -> str:
         return self.database_url_unpooled or self.database_url
 
+    # Check each pooled connection with a ping before use. Protects against connections the
+    # server dropped (Neon suspending idle compute, network blips). Costs one round trip per
+    # request: negligible next to the database, ~0.25 s from far away (set false for local dev).
+    database_pool_pre_ping: bool = True
+
+    @property
+    def app_database_url(self) -> str:
+        """The URL the app itself connects with.
+
+        Prefers the direct (unpooled) endpoint: the app keeps its own small connection
+        pool and runs as a single instance, and a direct connection lets asyncpg cache
+        prepared statements, roughly halving the round trips per query. Falls back to
+        DATABASE_URL when no unpooled URL is configured.
+        """
+        return self.database_url_unpooled or self.database_url
+
     @property
     def database_is_pooled(self) -> bool:
-        return "-pooler." in self.database_url
+        return "-pooler." in self.app_database_url
 
     jwt_secret: str
     jwt_algorithm: str = "HS256"
@@ -63,6 +79,14 @@ class Settings(BaseSettings):
     # AWS_* env vars that `neon deploy` / `neon env pull` write).
     storage_backend: str = "local"
     storage_bucket: str = "uploads"
+
+    # KYC (identity verification). Identity document numbers are encrypted with this
+    # Fernet key (generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())").
+    # KYC endpoints that store or reveal an ID number return 503 while it is unset.
+    kyc_encryption_key: str = ""
+    kyc_max_document_bytes: int = 10 * 1024 * 1024
+    # Lifetime of a KYC document download link.
+    kyc_download_link_seconds: int = 300
     # Read here (not only by boto3 from os.environ) so values in .env work too.
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""

@@ -11,11 +11,14 @@ from app.services.email import send_password_reset_email
 logger = logging.getLogger(__name__)
 
 
-async def start_password_reset(db: AsyncSession, user: User) -> None:
-    """Issue a 1-hour reset token, commit it, and email the reset link (email failures are logged)."""
+async def start_password_reset(db: AsyncSession, user: User, *, valid_hours: int = 1) -> None:
+    """Issue a reset token (1 hour by default), commit it, and email the reset link (email failures are logged).
+
+    Also used to invite a new team member: they choose their password through the same link.
+    """
     reset_token = generate_token()
     user.password_reset_token = reset_token
-    user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(hours=valid_hours)
     await db.commit()
 
     settings = get_settings()

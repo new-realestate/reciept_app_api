@@ -44,9 +44,18 @@ async def seed_default_users() -> None:
                 existing = await session.scalar(select(User.id).where(User.email == email))
                 if existing:
                     continue
-                tenant = Tenant(business_name=business_name)
-                session.add(tenant)
-                await session.flush()
+                # Entries naming the same business share it, so e.g. a seeded staff user
+                # works under the seeded owner instead of in a business of their own.
+                tenant = await session.scalar(
+                    select(Tenant)
+                    .where(Tenant.business_name == business_name, Tenant.deleted_at.is_(None))
+                    .order_by(Tenant.created_at)
+                    .limit(1)
+                )
+                if tenant is None:
+                    tenant = Tenant(business_name=business_name)
+                    session.add(tenant)
+                    await session.flush()
                 session.add(
                     User(
                         tenant_id=tenant.id,

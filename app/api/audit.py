@@ -53,7 +53,7 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """Newest first. Always scoped to the caller's business."""
-    tenant = (await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))).scalar_one()
+    tenant = await db.get_one(Tenant, current_user.tenant_id)
     try:
         tz = ZoneInfo(tenant.timezone or "UTC")
     except Exception:  # noqa: BLE001 - unknown timezone falls back to UTC
